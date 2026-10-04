@@ -1,6 +1,6 @@
 # REuncap v1.0
 
-Smooth high frame rates (60, 120, 144, 190, your monitor's refresh rate, or uncapped) for
+Smooth high frame rates (60, 120, your monitor's refresh rate, or uncapped) for
 **Resident Evil** (1996), **Resident Evil 2** (1998) and **Resident Evil 3** (1999) on PC with
 Classic REbirth, without speeding the games up.
 
