@@ -26,6 +26,8 @@ Menus, inventory and file screens are left as they are.
 If the game or Classic REbirth version is not one of these, the mod writes that to
 `reuncap.log` and changes nothing.
 
+**The Steam versions of RE1/2/3 Classic Rebirth are probably not compatible as of v1.0.**
+
 ## Install
 1. Open the folder for your game in this download (`Resident Evil`, `Resident Evil 2` or
    `Resident Evil 3`).
@@ -63,6 +65,8 @@ Each setting is explained in the ini itself. The main ones:
   game really needs; `0` keeps the original behaviour.
 
 ## Good to know
+- **Compatibility with the Steam versions is not tested and may not work.** I have not tested
+  the Steam releases of RE1/2/3 with the unique Steam versions of Classic Rebirth installed.
 - **Game speed never depends on the frame rate.** An in-between frame is only drawn if it can be
   finished before the next game tick is due, so on a slower PC, or during a dip, you simply get
   fewer in-between frames (e.g. 120 -> 90 fps) while the game keeps its 30 ticks per second.
