@@ -1,4 +1,4 @@
-# REuncap v1.0
+# REuncap - Framerate uncapper for RE1, 2 and 3 Classic Rebirth
 
 Smooth high frame rates (60, 120, your monitor's refresh rate, or uncapped) for
 **Resident Evil** (1996), **Resident Evil 2** (1998) and **Resident Evil 3** (1999) on PC with
