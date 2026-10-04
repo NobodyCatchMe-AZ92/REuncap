@@ -36,8 +36,8 @@ If the game or Classic REbirth version is not one of these, the mod writes that 
      In Resident Evil you can tick it together with other mods (e.g. Seamless HD Project) and save
      the selection as a preset.
    - **Resident Evil 2:** nothing to tick - it loads automatically, so it also works together
-     with a Classic REbirth mod such as BioRand. It needs an ASI loader; Seamless HD Project for
-     RE2 includes one (`dsound.dll`).
+     with a Classic REbirth mod such as BioRand. It needs an ASI loader; 'dsound.dll' is included
+     for this purpose).
 
 That's it. Settings are in `reuncap.ini` (next to the mod), and **F12** switches the mod on and
 off while playing - handy for comparing with the original 30 fps.
