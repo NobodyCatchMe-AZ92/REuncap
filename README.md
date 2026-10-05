@@ -23,14 +23,17 @@ GitHub, in the moddb comments, or on the Reddit thread.**
 | Game | Executable | Classic REbirth |
 |---|---|---|
 | Resident Evil | Japanese MediaKite `Biohazard.exe` (the one Classic REbirth uses) | 1.1.4 (recommended) or 1.1.3 |
-| Resident Evil 2 | Sourcenext 1.10 executable (usually `bio2.exe` or `bio2 1.10.exe`) | 1.0.9 |
+| Resident Evil 2 | Sourcenext 1.10 executable (usually `bio2.exe` or `bio2 1.10.exe`) | 1.0.9.1 |
 | Resident Evil 3 | Sourcenext 1.1.0 `BIOHAZARD(R) 3 PC.exe` | 1.0.3 |
 
 The executable's file name does not matter (e.g. `bio2.exe` or `bio2 1.10.exe`): REuncap recognises
 each game by its code, not by its name.
 
 If the game or Classic REbirth version is not one of these, the mod writes that to
-`reuncap.log` and changes nothing.
+`reuncap.log` and changes nothing. **Running the mod on any version of Classic Rebirth that is older
+than the versions listed above will probably cause issues** (for example, a bug for flickering
+typewriter screens in RE2 was reported, but the issue was the user running less than 1.0.9.1
+for their RE2 Classic Rebirth install).
 
 **The Steam versions of RE1, RE2 and RE3 are supported as of v1.1**, once Classic REbirth is set up
 for them - they have their own download, see [Steam versions](#steam-versions) below.
