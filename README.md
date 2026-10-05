@@ -20,7 +20,7 @@ Menus, inventory and file screens are left as they are.
 | Game | Executable | Classic REbirth |
 |---|---|---|
 | Resident Evil | Japanese MediaKite `Biohazard.exe` (the one Classic REbirth uses) | 1.1.4 (recommended) or 1.1.3 |
-| Resident Evil 2 | Sourcenext 1.10 executable (usually `bio2.exe` or 'bio2 1.10.exe') | 1.0.9 |
+| Resident Evil 2 | Sourcenext 1.10 executable (usually `bio2.exe` or `bio2 1.10.exe`) | 1.0.9 |
 | Resident Evil 3 | Sourcenext 1.1.0 `BIOHAZARD(R) 3 PC.exe` | 1.0.3 |
 
 The executable's file name does not matter (e.g. `bio2.exe` or `bio2 1.10.exe`): REuncap recognises
