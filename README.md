@@ -20,36 +20,82 @@ Menus, inventory and file screens are left as they are.
 | Game | Executable | Classic REbirth |
 |---|---|---|
 | Resident Evil | Japanese MediaKite `Biohazard.exe` (the one Classic REbirth uses) | 1.1.4 (recommended) or 1.1.3 |
-| Resident Evil 2 | Sourcenext 1.10 `bio2 1.10.exe` | 1.0.9 |
+| Resident Evil 2 | Sourcenext 1.10 executable (usually `bio2.exe`) | 1.0.9 |
 | Resident Evil 3 | Sourcenext 1.1.0 `BIOHAZARD(R) 3 PC.exe` | 1.0.3 |
+
+The executable's file name does not matter (e.g. `bio2.exe` or `bio2 1.10.exe`): REuncap recognises
+each game by its code, not by its name.
 
 If the game or Classic REbirth version is not one of these, the mod writes that to
 `reuncap.log` and changes nothing.
 
-**The Steam versions of RE1/2/3 Classic Rebirth are probably not compatible as of v1.0.**
+**The Steam versions of RE1, RE2 and RE3 are supported as of v1.1**, once Classic REbirth is set up
+for them - they have their own download, see [Steam versions](#steam-versions) below.
 
 ## Install
-1. Open the folder for your game in this download (`Resident Evil`, `Resident Evil 2` or
+There are two downloads - pick the one for your version of the games:
+- **`REuncap-v1.1-NONSTEAM.zip`** - the original PC releases (instructions below).
+- **`REuncap-v1.1-STEAM.zip`** - the Steam re-releases (see [Steam versions](#steam-versions)).
+
+1. Open the folder for your game in the download (`Resident Evil`, `Resident Evil 2` or
    `Resident Evil 3`).
 2. Copy **everything inside it** into your game's install folder (the folder with the game's
-   `.exe`).
-3. Start the game:
-   - **Resident Evil / Resident Evil 3:** tick **REuncap** in the Mod Selection window.
-     In Resident Evil you can tick it together with other mods (e.g. Seamless HD Project) and save
-     the selection as a preset.
-   - **Resident Evil 2:** nothing to tick - it loads automatically, so it also works together
-     with a Classic REbirth mod such as BioRand. It needs an ASI loader; 'dsound.dll' is included
-     for this purpose).
+   `.exe`). Allow it to replace `dsound.dll` if asked.
+3. Start the game as usual. There is nothing to tick or select: REuncap loads automatically, so it
+   works together with any Classic REbirth mod (e.g. Seamless HD Project, BioRand).
 
-That's it. Settings are in `reuncap.ini` (next to the mod), and **F12** switches the mod on and
-off while playing - handy for comparing with the original 30 fps.
+That's it. Everything the mod uses is in the `scripts` folder: settings are in
+`scripts\reuncap.ini`, and **F12** switches the mod on and off while playing - handy for comparing
+with the original 30 fps.
 
-To uninstall, untick the mod or delete what you copied.
+What gets installed:
 
-**Resident Evil with Classic REbirth 1.1.3** (older version, no Mod Selection modules): copy
-`reuncap.asi` and `reuncap.ini` from `Resident Evil\mod_REuncap` directly next to
-`Biohazard.exe` instead. This needs an ASI loader such as Ultimate ASI Loader (included with
-Seamless HD Project as `dinput8.dll`).
+| File | What it is |
+|---|---|
+| `scripts\reuncap.asi` | the mod |
+| `scripts\reuncap.ini` | its settings (each setting is explained inside) |
+| `scripts\reuncap.log` | written while playing |
+| `dsound.dll` | Ultimate ASI Loader - loads everything in the `scripts` folder |
+| `global.ini` | the loader's settings |
+| `REuncap-UncappedFPSMod-README.txt` | a short reminder of where everything is |
+
+**About `global.ini`:** in Resident Evil and Resident Evil 3 it tells the loader to load only from
+the `scripts` folder. Older Seamless HD Project installs leave `bio1hd.asi` / `bio3hd.asi` next to
+the game's `.exe`; current Classic REbirth versions have HD support built in and no longer use them,
+and if a loader picks them up they cause problems (blurry HD backgrounds in Resident Evil, a
+"dumping" message at start-up in Resident Evil 3). In Resident Evil 2 the setting is off, because
+Seamless HD Project's `bio2hd.asi` there is still in use.
+
+To uninstall, delete `scripts\reuncap.asi`, `scripts\reuncap.ini`, `scripts\reuncap.log` and
+`REuncap-UncappedFPSMod-README.txt`. In Resident Evil and Resident Evil 3 also delete `dsound.dll` and
+`global.ini` (unless another mod needs them). In Resident Evil 2 keep `dsound.dll` if you use
+Seamless HD Project - it needs it too.
+
+**Resident Evil with Classic REbirth 1.1.3** (older version): copy only the `scripts` folder. Your
+existing ASI loader (Seamless HD Project's `dinput8.dll`) loads it from there, and `bio1hd.asi` is
+still needed on 1.1.3, so do not copy `global.ini` or `dsound.dll`.
+
+## Steam versions
+Use **`REuncap-v1.1-STEAM.zip`**. Classic REbirth has to be set up for the Steam versions first:
+- **Resident Evil / Resident Evil 3:** follow Classic REbirth's own Steam instructions.
+- **Resident Evil 2:** follow this Steam guide:
+  https://steamcommunity.com/sharedfiles/filedetails/?id=3701562809
+
+Then drag and drop: copy the contents of the folder named after your game into the game's **main
+Steam folder** (the one with the Steam launcher in it):
+
+| Game | Copy the contents of | into |
+|---|---|---|
+| Resident Evil | `Resident Evil` | `steamapps\common\4249100_Biohazard` |
+| Resident Evil 2 | `Resident Evil 2` | `steamapps\common\4249110_Biohazard2` |
+| Resident Evil 3 | `Resident Evil 3` | `steamapps\common\4249120_Biohazard3` |
+
+(`steamapps` is inside your Steam library folder, e.g. `C:\Program Files (x86)\Steam\steamapps`.)
+
+The files land in the game's **`japanese`** folder, because on Steam that is where Classic REbirth runs
+the game. Everything REuncap uses - `dsound.dll`, `global.ini` and the `scripts` folder - is located
+there, e.g. settings are in `japanese\scripts\reuncap.ini`. Everything else - settings, F12,
+uninstalling - works exactly as described above, inside the `japanese` folder.
 
 ## Settings (`reuncap.ini`)
 Each setting is explained in the ini itself. The main ones:
@@ -65,16 +111,19 @@ Each setting is explained in the ini itself. The main ones:
   game really needs; `0` keeps the original behaviour.
 
 ## Good to know
-- **Compatibility with the Steam versions is not tested and may not work.** I have not tested
-  the Steam releases of RE1/2/3 with the unique Steam versions of Classic Rebirth installed.
 - **Game speed never depends on the frame rate.** An in-between frame is only drawn if it can be
   finished before the next game tick is due, so on a slower PC, or during a dip, you simply get
   fewer in-between frames (e.g. 120 -> 90 fps) while the game keeps its 30 ticks per second.
 - **Camera cuts** still show a short hold in all three games. In RE2 the new camera's first tick
   cannot be interpolated (there is no earlier pose from that camera). In RE3 the hold is Classic
   REbirth loading the new HD background (~90 ms), exactly as without the mod.
-- **Resident Evil 3 and FreeSync/G-Sync:** launch `BIOHAZARD(R) 3 PC.exe`. Variable refresh may not
-  engage when the game is started through another executable name (e.g. a lossless-music launcher).
+- **G-Sync / FreeSync not kicking in?** Graphics drivers decide per program whether a game gets
+  variable refresh, and these old games often are not recognised automatically - for example the
+  Steam versions' executables, or a game started through another executable name such as a
+  lossless-music launcher. Add the game's `.exe` as a program in your graphics settings (NVIDIA
+  Control Panel > Manage 3D settings > Program Settings, or the NVIDIA app / AMD Software) and enable
+  G-Sync / FreeSync for it - including windowed mode if you play in a window. The frame rate itself
+  does not depend on this; only whether your monitor follows it.
 - 2D effects are positioned on the games' 320x240 grid, so at very high frame rates their
   in-between positions move in whole game pixels.
 - Display latency is about the same as the original: the newest game state appears at the end of
@@ -97,11 +146,10 @@ Each setting is explained in the ini itself. The main ones:
 ## Reporting problems
 Please open an issue on GitHub and include:
 1. **`reuncap.log`** from a session where the problem happened. Before playing, set `DebugLog=1` in
-   `reuncap.ini` so the log records frame rate, pacing and tick-rate statistics. The log sits next to
-   `reuncap.ini` (in `mod_REuncap` for Resident Evil / Resident Evil 3, next to the game's `.exe` for
-   Resident Evil 2).
-2. Which game, which Classic REbirth version and which other mods you use (e.g. Seamless HD Project,
-   BioRand).
+   `scripts\reuncap.ini` so the log records frame rate, pacing and tick-rate statistics. The log is
+   `scripts\reuncap.log` in the game's folder (in the `japanese` folder on Steam).
+2. Which game, which version (Steam or not), which Classic REbirth version and which other mods you
+   use (e.g. Seamless HD Project, BioRand).
 3. What you saw, where it happens, and whether it goes away when you press **F12** (mod off).
    A screenshot or short clip helps a lot.
 
@@ -111,7 +159,7 @@ and a bash shell (e.g. Git Bash) for packaging.
 
 ```
 build.bat                  # -> build/reuncap.asi (32-bit)
-bash tools/package.sh      # -> release/REuncap/ (README, per-game folders, default ini files)
+bash tools/package.sh      # -> release/REuncap-NONSTEAM/ and release/REuncap-STEAM/ (README, per-game folders)
 ```
 
 `src/reuncap.cpp` holds the shared pacing/blending code and the Resident Evil 1 hooks;
@@ -126,8 +174,9 @@ bash tools/package.sh      # -> release/REuncap/ (README, per-game folders, defa
   BioRand's patches in Resident Evil 2.
 - **Seamless HD Project** team - REuncap was developed and tested alongside their HD backgrounds and
   text fixes.
-- **Ultimate ASI Loader** by ThirteenAG - loads REuncap in Resident Evil 2 (and Resident Evil with
-  Classic REbirth 1.1.3).
+- **Ultimate ASI Loader** by ThirteenAG (github.com/ThirteenAG/Ultimate-ASI-Loader, MIT licence) -
+  bundled as `dsound.dll`; it loads REuncap in all three games. Its licence is included as
+  `scripts\UltimateASILoader-LICENSE.txt`.
 - Built with AI assistance (Claude) together with the mod author. Resident Evil 2 and 3 were reverse
   engineered from the game executables and Classic REbirth's runtime behaviour.
 - Resident Evil is a trademark of Capcom Co., Ltd. This is an unofficial fan project; no game files

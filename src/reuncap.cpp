@@ -17,7 +17,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define REUNCAP_VERSION "1.0"
+#define REUNCAP_VERSION "1.1"
 
 // ---- Biohazard.exe ---------------------------------------------------------------------------
 #define A_MARNI_PTR      0x004CFD38  // CMarni* (thiscall renderer object)
