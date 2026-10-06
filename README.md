@@ -35,8 +35,9 @@ than the versions listed above will probably cause issues** (for example, a bug 
 typewriter screens in RE2 was reported, but the issue was the user running less than 1.0.9.1
 for their RE2 Classic Rebirth install).
 
-**The Steam versions of RE1, RE2 and RE3 are supported as of v1.1**, once Classic REbirth is set up
-for them - they have their own download, see [Steam versions](#steam-versions) below.
+**The Steam versions of RE1, RE2 and RE3 are supported, starting from REuncap v1.1**. Make sure Classic 
+REbirth is set up for the Steam versions first - they have their own download, see [Steam versions](#steam-versions) 
+below.
 
 ## Install
 There are two downloads - pick the one for your version of the games:
