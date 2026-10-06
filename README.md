@@ -47,12 +47,12 @@ There are two downloads - pick the one for your version of the games:
    `Resident Evil 3`).
 2. Copy **everything inside it** into your game's install folder (the folder with the game's
    `.exe`). Allow it to replace `dsound.dll` if asked.
-3. In the newly created `scripts` folder, open `reuncap.ini` andset your desired framerate with
-   the `FpsCap=` option (for example: `FpsCap=60` for 60fps gameplay, or `FpsCap=120` for 120fps
+3. In the newly created `scripts` folder, open `reuncap.ini` and set your desired framerate with
+   the `FpsCap=` option. For example: `FpsCap=60` for 60fps gameplay, or `FpsCap=120` for 120fps
    gameplay. Keep the default `FpsCap=-1` if you want the game to run at your monitor's refresh
    rate, or set `FpsCap=0` if you want to completely uncap the framerate above your monitor's refresh
    rate. 
-5. Start the game as usual. There is nothing to tick or select: REuncap loads automatically, so it
+4. Start the game as usual. There is nothing to tick or select: REuncap loads automatically, so it
    works together with any Classic REbirth mod (e.g. Seamless HD Project, BioRand).
 
 That's it. Everything the mod uses is in the `scripts` folder: settings are in
