@@ -51,7 +51,7 @@ There are two downloads - pick the one for your version of the games:
    the `FpsCap=` option. For example: `FpsCap=60` for 60fps gameplay, or `FpsCap=120` for 120fps
    gameplay. Keep the default `FpsCap=-1` if you want the game to run at your monitor's refresh
    rate, or set `FpsCap=0` if you want to completely uncap the framerate above your monitor's refresh
-   rate. 
+   rate (`FpsCap=0` is not recommended as it will likely make the motion unsmooth on your monitor).
 4. Start the game as usual. There is nothing to tick or select: REuncap loads automatically, so it
    works together with any Classic REbirth mod (e.g. Seamless HD Project, BioRand).
 
