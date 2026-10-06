@@ -1,6 +1,7 @@
 # Writes reuncap.ini in the house layout: each setting first, its explanation below,
 # two blank lines between entries, CRLF line endings.
-# usage: py -3 tools/make_ini.py <out.ini> [Key=Value ...]   (overrides the defaults below)
+# usage: py -3 tools/make_ini.py <out.ini> [--version X] [Key=Value ...]   (overrides the defaults below)
+# --version puts a "; REuncap vX" line at the very top, so users can see which release their ini came with.
 import sys
 
 ENTRIES = [
@@ -39,15 +40,27 @@ ENTRIES = [
         "Resident Evil 2 only. RE2 briefly freezes the picture at every camera angle change.",
         "  1 = shorter freeze: the mod trims the vanilla hitch to the part the game really needs (default)",
         "  0 = original behaviour: the full vanilla hitch, which is longer than with 1",
-        "The freeze cannot be removed completely: on a camera change RE2 loads the new background and",
-        "the first moment of the new angle has no earlier frame to blend from, so a short hitch always",
-        "remains.",
+        "The freeze cannot be removed completely: on a camera change RE2 loads the new background, so a",
+        "short freeze always remains.",
+    ]),
+    ("RE2CutCatchUp", "1", [
+        "Resident Evil 2 only. Smooth start of a new camera angle.",
+        "  1 = the new angle starts smoothly: the old angle stays up a moment longer, then the new one",
+        "      plays from its first image and catches up with the game within ~130 ms (default)",
+        "  0 = the new angle's first image is shown twice (one short 30 fps step), which is the vanilla",
+        "      game's behaviour but doesn't feel as natural as REuncap's CutCatchUp solution",
     ]),
 ]
 
 
-def render(overrides):
-    lines = ["[REuncap]"]
+def render(overrides, version=None):
+    lines = []
+    if version:
+        lines += [f"; REuncap v{version}",
+                  "; (the REuncap version these settings came with - newest release:",
+                  ";  https://github.com/NobodyCatchMe-AZ92/REuncap/releases)",
+                  ""]
+    lines.append("[REuncap]")
     for i, (key, val, comments) in enumerate(ENTRIES):
         if i:
             lines += ["", ""]
@@ -58,6 +71,10 @@ def render(overrides):
 
 if __name__ == "__main__":
     out = sys.argv[1]
-    ov = dict(a.split("=", 1) for a in sys.argv[2:])
+    args = sys.argv[2:]
+    version = None
+    if len(args) >= 2 and args[0] == "--version":
+        version, args = args[1], args[2:]
+    ov = dict(a.split("=", 1) for a in args)
     with open(out, "w", newline="") as f:
-        f.write(render(ov))
+        f.write(render(ov, version))

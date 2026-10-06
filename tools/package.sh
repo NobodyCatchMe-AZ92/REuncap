@@ -15,7 +15,7 @@
 #   scripts/UltimateASILoader-LICENSE.txt
 set -e
 cd "$(dirname "$0")/.."
-VER="${1:-1.1}"
+VER="${1:-1.2}"
 RN=release/REuncap-NONSTEAM
 RS=release/REuncap-STEAM
 rm -rf release/REuncap "$RN" "$RS"
@@ -72,7 +72,7 @@ game_folder() {   # $1 = destination folder, $2 = game name, $3 = scripts-only (
     cp third_party/UltimateASILoader/dsound.dll "$1/"
     cp third_party/UltimateASILoader/LICENSE.txt "$1/scripts/UltimateASILoader-LICENSE.txt"
     cp build/reuncap.asi "$1/scripts/"
-    py -3 tools/make_ini.py "$1/scripts/reuncap.ini"
+    py -3 tools/make_ini.py "$1/scripts/reuncap.ini" --version "$VER"
     global_ini "$1/global.ini" "$3"
     reminder "$1/REuncap-UncappedFPSMod-README.txt" "$2" "$4" "$5"
 }
@@ -83,7 +83,7 @@ STEAMNOTE="(Steam version: these files belong in the game's \"japanese\" folder,
 "
 
 # ---- non-Steam package ----------------------------------------------------------------------------
-cp README.md "$RN/README.md"
+cp README.md "$RN/README.md"; cp CHANGELOG.md "$RN/CHANGELOG.md"
 game_folder "$RN/Resident Evil"   "Resident Evil"   1 "" "$DEL"
 game_folder "$RN/Resident Evil 2" "Resident Evil 2" 0 "" "$KEEP2"
 game_folder "$RN/Resident Evil 3" "Resident Evil 3" 1 "" "$DEL"
@@ -96,7 +96,7 @@ It is laid out for the Steam versions' "japanese" folders, so you can simply dra
 EOF
 
 # ---- Steam package --------------------------------------------------------------------------------
-cp README.md "$RS/README.md"
+cp README.md "$RS/README.md"; cp CHANGELOG.md "$RS/CHANGELOG.md"
 game_folder "$RS/Resident Evil/japanese"   "Resident Evil"   1 "$STEAMNOTE" "$DEL"
 game_folder "$RS/Resident Evil 2/japanese" "Resident Evil 2" 0 "$STEAMNOTE" "$DEL"
 game_folder "$RS/Resident Evil 3/japanese" "Resident Evil 3" 1 "$STEAMNOTE" "$DEL"

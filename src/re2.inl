@@ -35,7 +35,7 @@ static int IsRe2() {
 #define R2_OT_RESET      0x00402290   // thiscall Marni::ResetOTs() - first game call after CR's tick timer fires
 
 // per-tick trace (DebugLog >= 2): tick interval, Clear offset, extra frames, real-present end offset
-struct R2Trace { float dt, clearAt, presentEnd, presentCall, realClear, drawMax, presMax; short extras; short presents; short cut; };
+struct R2Trace { float dt, clearAt, presentEnd, presentCall, realClear, drawMax, presMax; short extras; short presents; short cut; short unshown; short supp, repl; float lag; short nb, hCut, hPrev, hFail, hDup, same; float tsum, tmin, tmax; };
 static R2Trace g_r2tr[64]; static int g_r2trN; static R2Trace g_r2trCur; static double g_r2trTickT;
 
 static int g_sprTagN, g_r2RenderCalls;
@@ -52,6 +52,7 @@ static void* g_r2SubmitObj;
 static double g_r2LastTick;
 static int g_r2InGame, g_r2DidFrames, g_r2InExtra;  // g_tickStart is set by R2Reset_Hook
 static DWORD g_r2LastCut = 0xFFFFFFFF; static int g_r2CutHold;
+static unsigned g_r2TickN, g_r2ResetTicks;   // game ticks run; value at the last ResetOTs call
 
 typedef void (__cdecl *R2SubmitFn)(void* obj, int flag, int depth);
 static ThisFn0 g_r2ResetTramp;
@@ -125,7 +126,7 @@ static void R2EndTick() {
 
 static void __cdecl R2Tick_Hook(void) {
     // A new tick starts: what was recorded since the last one belongs to the previous tick.
-    g_ticks++;
+    g_ticks++; g_r2TickN++;
     g_r2DidFrames = 0;
     g_r2TickTramp();
 }
@@ -133,6 +134,12 @@ static void __cdecl R2Tick_Hook(void) {
 // Classic REbirth's timer fires on a fixed QPC grid; the first thing it does afterwards is reset the
 // ordering tables. That call is our tick start (the game's own tick function runs some ms later).
 static int __fastcall R2Reset_Hook(void* marni, void* edx) {
+    // A game tick ran since the last reset but nothing was presented: the tick was never shown (Classic
+    // REbirth skips drawing the tick of a camera cut). Its recorded data is discarded - left in place it
+    // mixed with the next tick's (old and new camera in one set), which garbled the first blended frame.
+    int unshown = !g_r2Armed && !g_r2InExtra && g_r2TickN != g_r2ResetTicks;
+    if (unshown) { g_r2curN = 0; g_r2Overflow = 0; g_r2trCur.unshown = 1; g_r2Armed = 1; }
+    if (!g_r2InExtra) g_r2ResetTicks = g_r2TickN;
     if (g_r2Armed && !g_r2InExtra) {
         g_r2Armed = 0;
         double now = NowMs();
@@ -140,7 +147,11 @@ static int __fastcall R2Reset_Hook(void* marni, void* edx) {
             double d = now - g_r2LastTick;
             if (d > 25.0 && d < 45.0) g_tickPeriod = g_tickPeriod * 0.98 + d * 0.02;   // long-run mean of CR's grid
             if (d > 10.0 && d < 45.0) g_r2AnyTick = g_r2AnyTick * 0.9 + d * 0.1;      // whatever the current loop rate is
-            g_r2InGame = d > 28.0 && d < 40.0;       // 30 Hz gameplay; menus/title tick at 60
+            // 30 Hz gameplay; menus/title/doors tick at 60. A single long tick (the new background loading
+            // after a camera cut, any other stall) keeps the current state - treating it as "left gameplay"
+            // cost the next two ticks their in-between frames (30 fps-looking motion after every cut).
+            if (d <= 28.0) g_r2InGame = 0;
+            else if (d < 40.0) g_r2InGame = 1;
         }
         if (g_r2trTickT > 0 && g_r2trN < 64) g_r2tr[g_r2trN++] = g_r2trCur;
         memset(&g_r2trCur, 0, sizeof g_r2trCur);
@@ -374,14 +385,21 @@ static void R2RenderAt(float t) {
     for (int i = 0; i < g_r2curN; i++) {
         R2Rec* c = &g_r2cur[i];
         R2Rec* p = (c->dup || !g_r2prevValid || g_r2CutHold) ? 0 : R2Find(g_r2prev, g_r2prevN, c->obj, c->site);
-        if (!p || p->dup) continue;
+        if (!p || p->dup) {
+            if (c->dup || (p && p->dup)) g_r2trCur.hDup++; else if (g_r2CutHold) g_r2trCur.hCut++; else g_r2trCur.hPrev++;
+            continue;
+        }
         R2ToL(p->m, L0); R2ToL(c->m, L1);
-        if (!Blend(L0, L1, t, Lo)) continue;
+        if (!memcmp(p->m, c->m, 64)) g_r2trCur.same++;
+        if (!Blend(L0, L1, t, Lo)) { g_r2trCur.hFail++; continue; }
         LToR2(Lo, c->m, o);
         memcpy(c->prim + R2_PRIM_MTX, o, 64);
         nb++;
     }
     g_blended += nb;
+    g_r2trCur.nb += (short)nb; g_r2trCur.tsum += t;
+    if (!g_r2trCur.extras || t < g_r2trCur.tmin) g_r2trCur.tmin = t;
+    if (t > g_r2trCur.tmax) g_r2trCur.tmax = t;
 
     if (g_r2prevValid && !g_r2CutHold) R2SpritesShift(t);
     R2Snap(marni);
@@ -465,6 +483,32 @@ static int R2CrTextShown() {
     return *(int*)(*g_r2CrTextList + 0x6CA0) > 0;
 }
 
+// ---- cut catch-up (RE2CutCatchUp) ----------------------------------------------------------------
+// The first image of a new camera angle has no earlier image in that camera to blend from, so it would
+// stay up for a whole tick (one repeated frame at 60 fps). Instead, the cut tick's frame is not presented
+// (the old angle stays up one tick longer, as in vanilla), and from the next tick on every frame is drawn
+// a little behind the game - the first one exactly at the cut tick's image - and that lag shrinks to
+// zero over a few ticks (motion runs a bit fast for ~130 ms). While behind, the tick's real frame is
+// replaced by an in-between frame at the lagged position.
+static int g_r2CatchUp = 1, g_r2CuTicks = 4;
+static int g_r2CuState;             // 0 off, 1 cut tick hidden - waiting for the first frame, 2 catching up
+static int g_r2CuSuppress, g_r2SkipReal, g_r2LastPresentRet = 1;
+static double g_r2CuLag0, g_r2CuT0;
+static double R2CuLag(double now) {
+    double x = (now - g_r2CuT0) / (g_r2CuTicks * g_tickPeriod);
+    if (x >= 1.0) { g_r2CuState = 0; return 0; }
+    return g_r2CuLag0 * (1.0 - x);
+}
+static void R2RenderAtCU(float t) {
+    if (g_r2CuState == 1) { g_r2CuLag0 = t; g_r2CuT0 = NowMs(); g_r2CuState = 2; }
+    if (g_r2CuState == 2) {
+        double lag = R2CuLag(NowMs());
+        if (lag > g_r2trCur.lag) g_r2trCur.lag = (float)lag;
+        t = (float)(t - lag); if (t < 0.f) t = 0.f;
+    }
+    R2RenderAt(t);
+}
+
 static double g_r2RealStart;
 static int __fastcall R2Clear_Hook(void* marni, void* edx) {
     static int keyWas;
@@ -474,25 +518,39 @@ static int __fastcall R2Clear_Hook(void* marni, void* edx) {
 
     DWORD cut = *(DWORD*)R2_STAGE_ROOM ^ ((DWORD)*(WORD*)(R2_STAGE_ROOM + 4) * 0x9E3779B1u);
     if (cut != g_r2LastCut) {
-        g_r2CutHold = 1; g_r2LastCut = cut; g_r2trCur.cut = 1;   // cut tick only: its submissions already use the new camera
+        // No in-between frames on the tick that shows the new camera: last tick's data belongs to the old
+        // one, nothing can be blended across the cut. Blending resumes on the next tick.
+        g_r2CutHold = 1; g_r2LastCut = cut; g_r2trCur.cut = 1;
+        g_r2CuState = 0;
+        if (g_r2CatchUp && g_enabled && g_r2InGame && !g_r2InExtra && !R2CrTextShown()) { g_r2CuSuppress = 1; g_r2CuState = 1; }
         if (g_debug >= 2) Log("    cut: words %04X %04X %04X", *(WORD*)R2_STAGE_ROOM, *(WORD*)(R2_STAGE_ROOM + 2), *(WORD*)(R2_STAGE_ROOM + 4));
     }
 
-    if (!g_r2InExtra && !g_r2DidFrames && g_enabled && (g_r2InGame || g_r2Force) && !R2CrTextShown() && marni == *(void**)R2_MARNI_PTR) {
+    if (!g_r2InExtra && !g_r2DidFrames && g_enabled && (g_r2InGame || g_r2Force) && !g_r2CutHold && !R2CrTextShown() && marni == *(void**)R2_MARNI_PTR) {
         g_r2DidFrames = 1;
         g_r2Marni = (char*)marni;
         g_r2trCur.clearAt = (float)(NowMs() - g_tickStart);
         double P = g_r2InGame ? g_tickPeriod : g_r2AnyTick;
-        if (g_r2Pacing == 1) R2Pace(P, R2RenderAt); else PaceExtraFrames(P, R2RenderAt);
-        g_r2RealStart = NowMs();
+        RenderAtFn ra = g_r2CuState ? R2RenderAtCU : R2RenderAt;
+        if (g_r2Pacing == 1) R2Pace(P, ra); else PaceExtraFrames(P, ra);
+        if (g_r2CuState == 1 || (g_r2CuState == 2 && R2CuLag(NowMs()) > 0.0)) {
+            // still behind the game: show the real frame's slot at the lagged position instead
+            double a = NowMs();
+            R2RenderAtCU(1.0f);
+            NotePresent(a); g_frames++; g_r2SkipReal = 1; g_r2trCur.repl = 1;
+        }
+        g_r2RealStart = g_r2SkipReal ? 0 : NowMs();
         g_r2trCur.realClear = (float)(g_r2RealStart - g_tickStart);
-    }
+    } else if (!g_r2InExtra && !g_r2DidFrames && !g_r2CutHold) g_r2CuState = 0;   // mod off / left gameplay
     return g_r2ClearTramp(marni, edx);
 }
 static int __fastcall R2Present_Hook(void* marni, void* edx) {
     if (g_r2InExtra) return g_r2PresentTramp(marni, edx);
     g_r2trCur.presentCall = (float)(NowMs() - g_tickStart);
-    int r = g_r2PresentTramp(marni, edx);
+    int r;
+    if (g_r2CuSuppress || g_r2SkipReal) { r = g_r2LastPresentRet; g_r2trCur.supp += g_r2CuSuppress; }   // catch-up: not shown
+    else r = g_r2LastPresentRet = g_r2PresentTramp(marni, edx);
+    g_r2CuSuppress = g_r2SkipReal = 0;
     R2SpritesEndTick();
     R2EndTick();   // everything submitted up to this present belongs to the frame just shown
     g_r2Armed = 1;
@@ -515,9 +573,10 @@ static int __fastcall R2Present_Hook(void* marni, void* edx) {
             if (g_debug >= 2) Log("    sprites: %d tagged/tick, %d shifts in window; pass2: %d prims", g_s1prevN, g_s1Shifted, g_p2N);
             g_s1Shifted = 0;
             if (g_debug >= 2 && g_r2trN) {
-                char line[2048]; int o = 0;
-                for (int i = 0; i < g_r2trN && o < 1900; i++)
-                    o += sprintf_s(line + o, sizeof line - o, " [%s%.1f x%d d%.1f p%.1f r%.1f e%.1f]", g_r2tr[i].cut ? "CUT " : "", g_r2tr[i].dt, g_r2tr[i].extras, g_r2tr[i].drawMax, g_r2tr[i].presMax, g_r2tr[i].realClear, g_r2tr[i].presentEnd);
+                char line[8192]; int o = 0;
+                for (int i = 0; i < g_r2trN && o < 8000; i++)
+                    o += sprintf_s(line + o, sizeof line - o, " [%s%s%s%.1f x%d t%.2f b%d s%d h%d/%d/%d/%d L%.2f%s]", g_r2tr[i].unshown ? "UNSHOWN " : "", g_r2tr[i].cut ? "CUT " : "", g_r2tr[i].supp ? "HID " : "", g_r2tr[i].dt, g_r2tr[i].extras,
+                        g_r2tr[i].extras ? g_r2tr[i].tsum / g_r2tr[i].extras : 0.f, g_r2tr[i].nb, g_r2tr[i].same, g_r2tr[i].hCut, g_r2tr[i].hPrev, g_r2tr[i].hFail, g_r2tr[i].hDup, g_r2tr[i].lag, g_r2tr[i].repl ? "R" : "");
                 Log("    trace:%s", line);
                 g_r2trN = 0;
             }
@@ -533,6 +592,9 @@ static int __fastcall R2Present_Hook(void* marni, void* edx) {
 static void Re2InitInterp() {
     g_r2Force = g_debug >= 4;
     g_r2Pacing = GetPrivateProfileIntA("REuncap", "RE2Pacing", 0, g_iniPath);
+    g_r2CatchUp = GetPrivateProfileIntA("REuncap", "RE2CutCatchUp", 1, g_iniPath);
+    g_r2CuTicks = GetPrivateProfileIntA("REuncap", "RE2CutCatchUpTicks", 4, g_iniPath);
+    if (g_r2CuTicks < 1) g_r2CuTicks = 1; if (g_r2CuTicks > 30) g_r2CuTicks = 30;
     static const BYTE kTick[5]    = { 0xB9, 0x60, 0x05, 0x68, 0x00 };                   // mov ecx, 0x680560
     static const BYTE kSubmit[6]  = { 0x53, 0x55, 0x8B, 0x6C, 0x24, 0x0C };             // push ebx; push ebp; mov ebp,[esp+0xc]
     static const BYTE kClear[6]   = { 0x83, 0xEC, 0x10, 0x56, 0x8B, 0xF1 };             // sub esp,0x10; push esi; mov esi,ecx

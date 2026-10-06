@@ -17,7 +17,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define REUNCAP_VERSION "1.1"
+#define REUNCAP_VERSION "1.2"
 
 // ---- Biohazard.exe ---------------------------------------------------------------------------
 #define A_MARNI_PTR      0x004CFD38  // CMarni* (thiscall renderer object)
@@ -317,6 +317,7 @@ static void WaitUntil(double t) {
 static ThisFn1 g_dbgTextFn;
 static double g_tStart, g_tDraw, g_tAll;
 static int g_frames, g_blended, g_held;
+static int g_dN, g_dDup, g_dNoPrev, g_dCut, g_dFail, g_dSame; static double g_dT, g_dMove;
 static double g_statT;
 
 static void RenderIntermediate(char* marni, float t) {
@@ -328,12 +329,19 @@ static void RenderIntermediate(char* marni, float t) {
         Rec* p = (c->dup || !g_prevValid || g_cutHold) ? 0 : Find(g_prev, g_prevN, c->tmd, c->set);
         float o[16];
         int ok = p && !p->dup && Blend(p->m, c->m, t, o);
+        if (c->dup) g_dDup++; else if (g_cutHold) g_dCut++; else if (!g_prevValid || !p) g_dNoPrev++; else if (!ok) g_dFail++;
+        if (ok) {
+            float dx = c->m[12] - p->m[12], dy = c->m[13] - p->m[13], dz = c->m[14] - p->m[14];
+            double mv = sqrt(dx * dx + dy * dy + dz * dz); g_dMove += mv;
+            if (!memcmp(p->m, c->m, 48)) g_dSame++;
+        }
         if (!ok) { nh++; continue; }
         int cnt = *(int*)((char*)c->tmd + TMD_COUNT);
         if (cnt > 16) cnt = 16;
         for (int k = 0; k < cnt; k++) memcpy(ObjMatrix(c->tmd, c->set, k), o, 64);
         nb++;
     }
+    g_dT += t; g_dN++;
     nb += BlendPrims(g_prevValid && !g_cutHold, t);
     nb += BlendSprites(g_prevValid && !g_cutHold, t);
     g_blended += nb; g_held += nh;
@@ -481,13 +489,49 @@ static void UpdateRefresh() {
 // guard is the real frame's recent worst-case cost, and an in-between frame is only started if it can
 // finish in time (on slow hardware we simply show fewer of them). Game speed never changes.
 typedef void (*RenderAtFn)(float t);
+// Phase lock: when the frame cap is a whole multiple of the tick rate (60, 90, 120 ... fps), the same
+// frame pattern repeats every tick and the grid above has no preferred alignment - after a hitch (a room
+// load, a door) it can settle where the in-between frames sit late in the tick (e.g. t = 0.85 instead of
+// 0.5 at 60 fps), which looks like 30 fps until something resets it. So in that case every slot is pulled
+// toward the ideal grid (real frame at t = 1, in-between frames evenly spaced before it), by at most a
+// quarter frame per frame, outside a small dead zone. With other caps the alignment drifts from tick to
+// tick by itself.
+static double g_paceErrSum; static int g_paceErrN, g_paceNudged;
+// Returns the (possibly nudged) slot time; *slotK = index of the nearest ideal slot (0 = the real frame's).
+static double PaceSlot(double cont, double anchor, double f, int locked, int* slotK) {
+    if (slotK) *slotK = 1;
+    if (!locked || f <= 0) return cont;
+    double k = floor((anchor - cont) / f + 0.5);
+    if (slotK) *slotK = (int)k;
+    double err = (anchor - k * f) - cont;          // ideal slot nearest to the continuous one
+    g_paceErrSum += fabs(err); g_paceErrN++;
+    // dead zone: the tick start itself wobbles by a millisecond or so; leave small offsets alone so the
+    // frames stay evenly spaced, and only pull back a real lock-in
+    double dz = 3.0; if (dz > f * 0.3) dz = f * 0.3;
+    if (fabs(err) <= dz) return cont;
+    err = err > 0 ? err - dz : err + dz;
+    double lim = f * 0.25;
+    if (err > lim) err = lim; else if (err < -lim) err = -lim;
+    g_paceNudged++;
+    return cont + err;
+}
 static void PaceExtraFrames(double P, RenderAtFn renderAt) {
     double f = FrameIntervalMs();
     double fe = f > 0 ? f : g_presentCost;            // uncapped: frame time = what present allows
     double guard = g_costPeak + 0.3; if (guard > P * 0.5) guard = P * 0.5;
     double deadline = g_tickStart + P;
+    double anchor = g_tickStart + P - fe - guard;     // where the tick's real frame (t = 1) belongs
+    double ratio = f > 0 ? P / f : 0;
+    int locked = f > 0 && fabs(ratio - floor(ratio + 0.5)) < 0.05;
     for (;;) {
-        double tau = NowMs(); if (f > 0 && g_lastPresent + f > tau) tau = g_lastPresent + f;
+        double now = NowMs(), tau = now;
+        if (f > 0 && g_lastPresent + f > tau) tau = g_lastPresent + f;
+        int k;
+        tau = PaceSlot(tau, anchor, f, locked, &k);
+        // the next slot is the real frame's own: no in-between frame there (it would only repeat the real
+        // pose, which looks like 30 fps) - this is what pulls a mis-aligned grid back into rhythm
+        if (k < 1) break;
+        if (tau < now) tau = now;
         double t = (tau - g_tickStart + fe + guard) / P;
         if (t >= 0.999) break;               // next grid slot belongs to the tick's real frame
         if (tau + g_frameCostPeak + guard > deadline) break;
@@ -504,6 +548,7 @@ static void PaceExtraFrames(double P, RenderAtFn renderAt) {
     }
     // The real frame's slot is in [tickStart + P - f - guard, tickStart + P - guard).
     double tau = g_lastPresent + f;
+    tau = PaceSlot(tau, anchor, f, locked, 0);
     if (f > 0 && tau + guard < deadline) WaitUntil(tau);
 }
 static char* g_re1Marni;
@@ -578,6 +623,13 @@ real_frame:
             UpdateRefresh();
             if (g_debug >= 2) for (int i = 0; i < g_pprevN && i < 12; i++)
                 Log("   prim %p site %08X h %08X tex %08X t=(%.0f %.0f %.0f)", g_pprev[i].prim, g_pprev[i].site - 5, g_pprev[i].handle, g_pprev[i].tex, g_pprev[i].m[12], g_pprev[i].m[13], g_pprev[i].m[14]);
+            if (g_debug >= 2)
+                Log("   DIAG extra frames %d avg t %.3f | objects blended %d (identical prev/cur %d, avg move %.1f) held: dup %d no-prev %d cut %d blend-fail %d | prevValid %d cutHold %d cut %06X",
+                    g_dN, g_dN ? g_dT / g_dN : 0.0, g_blended, g_dSame, g_blended ? g_dMove / g_blended : 0.0, g_dDup, g_dNoPrev, g_dCut, g_dFail,
+                    g_prevValid, g_cutHold, *(DWORD*)A_STAGE_ROOM_CUT & 0xFFFFFF);
+            if (g_debug >= 2) Log("   PACE grid error avg %.2f ms over %d slots, nudged %d", g_paceErrN ? g_paceErrSum / g_paceErrN : 0.0, g_paceErrN, g_paceNudged);
+            g_paceErrSum = 0; g_paceErrN = g_paceNudged = 0;
+            g_dN = g_dDup = g_dNoPrev = g_dCut = g_dFail = g_dSame = 0; g_dT = g_dMove = 0;
             g_frames = g_blended = g_held = 0; g_statT = now;
         }
     }

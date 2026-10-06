@@ -268,10 +268,11 @@ static void R3BuildVertexMap() {
 #define R3_ADDPRIM_PTR   0x000036D0
 #define R3_MAX_PK        12000
 #define R3_MAXMOVE_PX    48.0f        // screen units (320x240 space) per tick beyond which we don't blend
-struct R3Pk { BYTE* p; DWORD sig; BYTE nc, joint, lerp; float cur[4][3], prev[4][3]; };
+struct R3Pk { BYTE* p; DWORD sig, tag; BYTE nc, joint, lerp; float cur[4][3], prev[4][3]; };
+#define R3_CUR_OBJ       0x00A61CC4   // exe: object being processed (set by the object-list loops before drawing)
 static R3Pk g_r3PkA[R3_MAX_PK], g_r3PkB[R3_MAX_PK];
 static R3Pk *g_r3Pk = g_r3PkA, *g_r3PkPrev = g_r3PkB; static int g_r3PkN, g_r3PkPrevN, g_r3PkOverflow;
-static int g_r3GenMatched, g_r3GenMapped, g_r3GenStatic, g_r3GenFar;
+static int g_r3GenMatched, g_r3GenMapped, g_r3GenStatic, g_r3GenFar, g_r3OldCross, g_r3TagsMax;
 typedef void (__cdecl *R3AddPrimFn)(DWORD, BYTE*);
 static R3AddPrimFn g_r3AddPrim;
 static const int kR3Xo[4] = { 8, 0x18, 0x28, 0x38 };
@@ -281,7 +282,7 @@ static void __cdecl R3AddPrimHook(DWORD ot, BYTE* p) {
     BYTE c = p[7];
     if (c != 0xD4 && c != 0xD6 && c != 0xD8 && c != 0xDA) return;
     if (g_r3PkN >= R3_MAX_PK) { g_r3PkOverflow = 1; return; }
-    R3Pk& k = g_r3Pk[g_r3PkN++]; k.p = p; k.nc = c >= 0xD8 ? 4 : 3;
+    R3Pk& k = g_r3Pk[g_r3PkN++]; k.p = p; k.nc = c >= 0xD8 ? 4 : 3; k.tag = *(DWORD*)R3_CUR_OBJ;
 }
 static DWORD R3PkSig(const BYTE* p, int nc) {
     DWORD h = p[7] * 0x01000193u;
@@ -308,6 +309,51 @@ static int R3MapGet(const float* cur, float* prev) {
         if (g_r3MapX[h] == kx && g_r3MapY[h] == ky) { memcpy(prev, g_r3MapV[h], 12); return 1; }
     return 0;
 }
+#define R3_PKH 32768
+static DWORD g_r3HTag[R3_PKH], g_r3HSig[R3_PKH]; static BYTE g_r3HNc[R3_PKH]; static int g_r3HHead[R3_PKH]; static unsigned g_r3HStamp[R3_PKH], g_r3HCur;
+static int g_r3PkNext[R3_MAX_PK]; static BYTE g_r3PkUsed[R3_MAX_PK];
+static int R3PkSlot(DWORD tag, DWORD sig, BYTE nc, int create) {
+    DWORD h = ((tag * 0x9E3779B1u) ^ (sig * 0x85EBCA6Bu) ^ nc) >> 17;
+    for (int n = 0; n < R3_PKH; n++, h = (h + 1) & (R3_PKH - 1)) {
+        if (g_r3HStamp[h] != g_r3HCur) {
+            if (!create) return -1;
+            g_r3HStamp[h] = g_r3HCur; g_r3HTag[h] = tag; g_r3HSig[h] = sig; g_r3HNc[h] = nc; g_r3HHead[h] = -1; return (int)h;
+        }
+        if (g_r3HTag[h] == tag && g_r3HSig[h] == sig && g_r3HNc[h] == nc) return (int)h;
+    }
+    return -1;
+}
+// DebugLog >= 2: how often the old order-only alignment paired packets of two different objects (and
+// accepted them), plus the number of distinct objects drawing model packets this tick.
+static void R3GenericOldCross() {
+    DWORD tags[256]; int nt = 0;
+    for (int i = 0; i < g_r3PkN && nt < 256; i++) {
+        int k = 0; while (k < nt && tags[k] != g_r3Pk[i].tag) k++;
+        if (k == nt) tags[nt++] = g_r3Pk[i].tag;
+    }
+    if (nt > g_r3TagsMax) g_r3TagsMax = nt;
+    int j = 0;
+    for (int i = 0; i < g_r3PkN; i++) {
+        R3Pk& k = g_r3Pk[i];
+        int f = -1;
+        for (int q = j; q < g_r3PkPrevN && q < j + 24; q++) if (g_r3PkPrev[q].sig == k.sig && g_r3PkPrev[q].nc == k.nc) { f = q; break; }
+        if (f < 0 && i + 2 < g_r3PkN) {
+            DWORD s1 = g_r3Pk[i + 1].sig, s2 = g_r3Pk[i + 2].sig;
+            for (int q = j; q + 2 < g_r3PkPrevN && q < j + 4096; q++)
+                if (g_r3PkPrev[q].sig == k.sig && g_r3PkPrev[q + 1].sig == s1 && g_r3PkPrev[q + 2].sig == s2) { f = q; break; }
+        }
+        if (f < 0) continue;
+        j = f + 1;
+        R3Pk& o = g_r3PkPrev[f];
+        if (o.tag == k.tag) continue;
+        int ok = 1;
+        for (int c = 0; c < k.nc && ok; c++) {
+            float dx = k.cur[c][0] - o.cur[c][0], dy = k.cur[c][1] - o.cur[c][1];
+            if (dx * dx + dy * dy > R3_MAXMOVE_PX * R3_MAXMOVE_PX) ok = 0;
+        }
+        if (ok) g_r3OldCross++;
+    }
+}
 // Called at the end of a tick (before extra frames): fill positions, align with the previous tick.
 static void R3GenericBuild() {
     for (int i = 0; i < g_r3PkN; i++) {
@@ -316,18 +362,28 @@ static void R3GenericBuild() {
         for (int c = 0; c < k.nc; c++) { float* xy = (float*)(k.p + kR3Xo[c]); k.cur[c][0] = xy[0]; k.cur[c][1] = xy[1]; k.cur[c][2] = *R3PkZ(k.p, k.nc, c); }
     }
     memset(g_r3MapUsed, 0, sizeof g_r3MapUsed);
-    int j = 0;
+    if (g_debug >= 2) R3GenericOldCross();
+    // Last tick's packets by (object, signature): the same polygon of the same object. Several zombies of
+    // one kind have identical texture words, so matching by signature + draw order alone could pair a limb
+    // with another zombie's (stretched / vanishing limbs when they were close together).
+    g_r3HCur++;
+    for (int q = g_r3PkPrevN - 1; q >= 0; q--) {
+        R3Pk& o = g_r3PkPrev[q];
+        int h = R3PkSlot(o.tag, o.sig, o.nc, 1);
+        g_r3PkNext[q] = h >= 0 ? g_r3HHead[h] : -1; if (h >= 0) g_r3HHead[h] = q;
+        g_r3PkUsed[q] = 0;
+    }
     for (int i = 0; i < g_r3PkN; i++) {
         R3Pk& k = g_r3Pk[i];
-        int f = -1;
-        for (int q = j; q < g_r3PkPrevN && q < j + 24; q++) if (g_r3PkPrev[q].sig == k.sig && g_r3PkPrev[q].nc == k.nc) { f = q; break; }
-        if (f < 0 && i + 2 < g_r3PkN) {    // resync after a run that appeared / disappeared: 3 in a row
-            DWORD s1 = R3PkSig(g_r3Pk[i + 1].p, g_r3Pk[i + 1].nc), s2 = R3PkSig(g_r3Pk[i + 2].p, g_r3Pk[i + 2].nc);
-            for (int q = j; q + 2 < g_r3PkPrevN && q < j + 4096; q++)
-                if (g_r3PkPrev[q].sig == k.sig && g_r3PkPrev[q + 1].sig == s1 && g_r3PkPrev[q + 2].sig == s2) { f = q; break; }
+        int h = R3PkSlot(k.tag, k.sig, k.nc, 0);
+        if (h < 0) continue;
+        int f = -1; float bd = 1e30f;
+        for (int q = g_r3HHead[h]; q >= 0; q = g_r3PkNext[q]) {     // nearest unused twin (usually the only one)
+            if (g_r3PkUsed[q]) continue;
+            float dx = k.cur[0][0] - g_r3PkPrev[q].cur[0][0], dy = k.cur[0][1] - g_r3PkPrev[q].cur[0][1], d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; f = q; if (d == 0) break; }
         }
         if (f < 0) continue;
-        j = f + 1;
         R3Pk& o = g_r3PkPrev[f];
         int ok = 1;
         for (int c = 0; c < k.nc && ok; c++) {
@@ -335,6 +391,7 @@ static void R3GenericBuild() {
             if (dx * dx + dy * dy > R3_MAXMOVE_PX * R3_MAXMOVE_PX) ok = 0;
         }
         if (!ok) { g_r3GenFar++; continue; }
+        g_r3PkUsed[f] = 1;
         k.lerp = 1; g_r3GenMatched++;
         for (int c = 0; c < k.nc; c++) { memcpy(k.prev[c], o.cur[c], 12); R3MapPut(k.cur[c], o.cur[c]); }
     }
@@ -719,7 +776,8 @@ static void __cdecl R3Render() {
             char line[1024]; int o = 0;
             for (int k = 0; k < 256; k++) if (g_r3FxCnt[k]) o += sprintf_s(line + o, sizeof line - o, " %02X:%d/%d/%d", k, g_r3FxCnt[k], g_r3FxMoved[k], g_r3FxMiss[k]);
             Log("    float packets drawn %d, collected via AddPrim %d; generic rejected for moving too far %d", g_r3FloatDrawn, g_r3FloatCollected, g_r3GenFar);
-            g_r3FloatDrawn = g_r3FloatCollected = g_r3GenFar = 0;
+            Log("    generic objects per tick (max) %d; old order-only matching would have paired different objects %d times", g_r3TagsMax, g_r3OldCross);
+            g_r3FloatDrawn = g_r3FloatCollected = g_r3GenFar = 0; g_r3TagsMax = g_r3OldCross = 0;
             Log("    2D relaxed (animated) matches %d", g_r3FxRelaxed); g_r3FxRelaxed = 0;
             if (o) Log("    2D packets in extra frames (code:drawn/moved/unmatched):%s", line);
             memset(g_r3FxCnt, 0, sizeof g_r3FxCnt); memset(g_r3FxMoved, 0, sizeof g_r3FxMoved); memset(g_r3FxMiss, 0, sizeof g_r3FxMiss);

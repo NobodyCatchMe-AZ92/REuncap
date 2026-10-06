@@ -41,8 +41,8 @@ below.
 
 ## Install
 There are two downloads - pick the one for your version of the games:
-- **`REuncap-v1.1-NONSTEAM.zip`** - the original PC releases (instructions below).
-- **`REuncap-v1.1-STEAM.zip`** - the Steam re-releases (see [Steam versions](#steam-versions)).
+- **`REuncap-v1.2-NONSTEAM.zip`** - the original PC releases (instructions below).
+- **`REuncap-v1.2-STEAM.zip`** - the Steam re-releases (see [Steam versions](#steam-versions)).
 
 1. Open the folder for your game in the download (`Resident Evil`, `Resident Evil 2` or
    `Resident Evil 3`).
@@ -88,7 +88,7 @@ existing ASI loader (Seamless HD Project's `dinput8.dll`) loads it from there, a
 still needed on 1.1.3, so do not copy `global.ini` or `dsound.dll`.
 
 ## Steam versions
-Use **`REuncap-v1.1-STEAM.zip`**. Classic REbirth has to be set up for the Steam versions first:
+Use **`REuncap-v1.2-STEAM.zip`**. Classic REbirth has to be set up for the Steam versions first:
 - **Resident Evil / Resident Evil 3:** follow Classic REbirth's own Steam instructions.
 - **Resident Evil 2:** follow this Steam guide:
   https://steamcommunity.com/sharedfiles/filedetails/?id=3701562809
@@ -121,14 +121,20 @@ Each setting is explained in the ini itself. The main ones:
 - **RE2SmoothCameraCuts** (Resident Evil 2 only, default `1`): RE2 freezes the picture for two ticks
   (~100 ms) at every camera change, a PlayStation leftover. `1` shortens that to the one tick the
   game really needs; `0` keeps the original behaviour.
+- **RE2CutCatchUp** (Resident Evil 2 only, default `1`): the new camera angle starts smoothly - the
+  old angle stays up a moment longer, then the new one plays from its first image and catches up with
+  the game within ~130 ms. `0` shows the new angle's first image twice (a short 30 fps step).
+
+The first line of `reuncap.ini` shows which REuncap version it came with (from v1.2 on). What changed
+in each version is listed in `CHANGELOG.md`.
 
 ## Good to know
 - **Game speed never depends on the frame rate.** An in-between frame is only drawn if it can be
   finished before the next game tick is due, so on a slower PC, or during a dip, you simply get
   fewer in-between frames (e.g. 120 -> 90 fps) while the game keeps its 30 ticks per second.
-- **Camera cuts** still show a short hold in all three games. In RE2 the new camera's first tick
-  cannot be interpolated (there is no earlier pose from that camera). In RE3 the hold is Classic
-  REbirth loading the new HD background (~90 ms), exactly as without the mod.
+- **Camera cuts** still show a short hold in all three games, while the game loads the new
+  background. In RE2 the new angle then starts smoothly (see `RE2CutCatchUp`). In RE3 the hold is
+  Classic REbirth loading the new HD background (~90 ms), exactly as without the mod.
 - **G-Sync / FreeSync not kicking in?** Graphics drivers decide per program whether a game gets
   variable refresh, and these old games often are not recognised automatically - for example the
   Steam versions' executables, or a game started through another executable name such as a
