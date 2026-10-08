@@ -14,7 +14,7 @@ the current one:
 - effects: shell casings, blood, muzzle flashes, sparks
 
 One file, `reuncap.asi`, works for all three games; it detects which game it is running in.
-Menus, inventory and file screens are left as they are. Download it from the [Releases][#Releases] page.
+Menus, inventory and file screens are left as they are. Download it from the [Releases](#Releases) page.
 
 **Please help me to improve the mod by [Reporting Problems](#Reporting-problems) either here on
 GitHub, in the moddb comments, or on the Reddit thread.**
