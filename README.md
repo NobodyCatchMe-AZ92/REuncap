@@ -14,7 +14,7 @@ the current one:
 - effects: shell casings, blood, muzzle flashes, sparks
 
 One file, `reuncap.asi`, works for all three games; it detects which game it is running in.
-Menus, inventory and file screens are left as they are. Download it from the [Releases](#Releases) page.
+Menus, inventory and file screens are left as they are. Download it from the [Releases](https://github.com/NobodyCatchMe-AZ92/REuncap/releases) page.
 
 **Please help me to improve the mod by [Reporting Problems](#Reporting-problems) either here on
 GitHub, in the moddb comments, or on the Reddit thread.**
@@ -40,7 +40,7 @@ REbirth is set up for the Steam versions first - they have their own download, s
 below.
 
 ## Install
-There are two downloads - pick the one for your version of the games:
+There are two downloads - pick the one for your version of the games from the [Releases](https://github.com/NobodyCatchMe-AZ92/REuncap/releases) page:
 - **`REuncap-v1.2-NONSTEAM.zip`** - the original PC releases (instructions below).
 - **`REuncap-v1.2-STEAM.zip`** - the Steam re-releases (see [Steam versions](#steam-versions)).
 
