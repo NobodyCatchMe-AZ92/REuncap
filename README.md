@@ -22,7 +22,7 @@ GitHub, in the moddb comments, or on the Reddit thread.**
 ## Requirements
 | Game | Executable | Classic REbirth |
 |---|---|---|
-| Resident Evil | Japanese MediaKite `Biohazard.exe` (the one Classic REbirth uses) | 1.1.4 or 1.1.3 (recommended as 1.1.4 is just naturally very glitchy) |
+| Resident Evil | Japanese MediaKite `Biohazard.exe` (the one Classic REbirth uses) | 1.1.4 or 1.1.3 (recommend 1.1.3 as 1.1.4 is just naturally very glitchy) |
 | Resident Evil 2 | Sourcenext 1.10 executable (usually `bio2.exe` or `bio2 1.10.exe`) | 1.0.9.1 |
 | Resident Evil 3 | Sourcenext 1.1.0 `BIOHAZARD(R) 3 PC.exe` | 1.0.3 |
 
