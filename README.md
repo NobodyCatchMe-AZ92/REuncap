@@ -78,7 +78,7 @@ What gets installed:
 | `dsound.dll` | Ultimate ASI Loader - loads everything in the `scripts` folder |
 | `global.ini` | the loader's settings |
 | `REuncap-UncappedFPSMod-README.txt` | a short reminder of where everything is |
-| `scripts\bio1hd.asi` | only in the Resident Evil Classic REbirth 1.1.3 folder: Seamless HD Project's HD loader, which 1.1.3 still needs |
+| `scripts\bio1hd.asi` | only in the Resident Evil Classic REbirth 1.1.3 folder: a HD loader, which 1.1.3 still needs |
 
 **About `global.ini`:** in Resident Evil and Resident Evil 3 it tells the loader to load only from
 the `scripts` folder. Older Seamless HD Project installs leave `bio1hd.asi` / `bio3hd.asi` next to
@@ -221,7 +221,9 @@ bash tools/package.sh      # -> release/REuncap-NONSTEAM/ and release/REuncap-ST
 - **BioRand** (github.com/biorand/classic) - its source was used to make sure REuncap stays clear of
   BioRand's patches in Resident Evil 2.
 - **Seamless HD Project** team - REuncap was developed and tested alongside their HD backgrounds and
-  text fixes. Their `bio1hd.asi` is included in the Resident Evil Classic REbirth 1.1.3 folder.
+  text fixes.
+- **TeamX Resident Evil HD mod** team -  Their `bio1hd.asi` is included in the Resident Evil Classic
+  REbirth 1.1.3 folder.
 - **Mulderload's Steam Enhancement Pack** (mulderland.com) - the Steam package is laid out for it.
 - **Ultimate ASI Loader** by ThirteenAG (github.com/ThirteenAG/Ultimate-ASI-Loader, MIT licence) -
   bundled as `dsound.dll`; it loads REuncap in all three games. Its licence is included as
