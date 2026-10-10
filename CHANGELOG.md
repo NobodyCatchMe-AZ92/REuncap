@@ -1,5 +1,43 @@
 # REuncap changelog
 
+## v1.3 (2026-10-11)
+**Fixes**
+- **Resident Evil 3:** text in interaction popups no longer slides around while it is written out
+  (text and interface graphics are no longer interpolated).
+- **Resident Evil 3:** fixed a crash during the boss encounter in the tram.
+- **Resident Evil (Classic REbirth 1.1.4):** skipping a cutscene with Classic REbirth's cutscene skip no
+  longer leaves the screen black.
+- **Resident Evil:** REuncap now stays inactive when the game is started without Classic REbirth (e.g.
+  a launcher's "original executable" option with REuncap's files still in the folder).
+
+**New**
+- **Hotkeys:** Shift + `=` switches REuncap on and off (was F12); `=` on its own changes the frame rate
+  cap while playing: 30, 60, 90, 120, your monitor's refresh rate, uncapped. Numpad `+` works the same
+  as `=`. The key only works while the game window is active. `ToggleKey=123` in `reuncap.ini` brings
+  back F12.
+- **On-screen messages** for the hotkeys, e.g. "Disabled REuncap with hotkey." or "FPS set to 60 with
+  hotkey.", shown for 4 seconds in the lower right corner. `ToggleMessage=0` turns them off.
+- `FpsCap=30` is now allowed (no in-between frames).
+- **Basic support for older Classic REbirth versions:** Resident Evil 2 on 1.0.9 and 1.0.8 (no more
+  flickering typewriter/save screens), Resident Evil 3 on 1.0.2 and 1.0.1. This support is very basic
+  and no further support will be given for these versions: any bugs or issues on them are the user's
+  responsibility. Please upgrade to the latest Classic REbirth for Resident Evil 2 (1.0.9.1) and
+  Resident Evil 3 (1.0.3).
+
+**Packaging**
+- **Resident Evil** now has two folders in the non-Steam download: one for Classic REbirth 1.1.4 and one
+  for 1.1.3. The 1.1.3 folder includes Seamless HD Project's `bio1hd.asi` in `scripts`, so it installs by
+  drag and drop like the others.
+- **Steam:** the package now works with **Mulderload's Steam Enhancement Pack** (the game runs from
+  `rebirth`) as well as with Classic REbirth's own Steam setup (`japanese`), from the same three folders.
+  For Mulderload's pack, turning dgVoodoo2 off is recommended (with it on, REuncap reaches only about 60 fps
+  in Resident Evil and about 90 in Resident Evil 2); a `MulderConfig.save.json` with dgVoodoo2 off is
+  included - run `MulderConfig.exe` once and save to apply it.
+
+**Upgrading:** replace `scriptseuncap.asi`. Your old `reuncap.ini` keeps working, but it still sets
+`ToggleKey=123` (F12) explicitly - copy the new `reuncap.ini` over it (or change that line to
+`ToggleKey=187`) to get the new `=` hotkeys and the descriptions of the new settings.
+
 ## v1.2 (2026-10-07)
 **Fixes**
 - **All three games:** after a door, a skipped stair/door animation or another short hitch, a camera

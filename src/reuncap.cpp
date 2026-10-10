@@ -16,8 +16,9 @@
 #include <intrin.h>
 
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "gdi32.lib")
 
-#define REUNCAP_VERSION "1.2"
+#define REUNCAP_VERSION "1.3"
 
 // ---- Biohazard.exe ---------------------------------------------------------------------------
 #define A_MARNI_PTR      0x004CFD38  // CMarni* (thiscall renderer object)
@@ -60,13 +61,96 @@ typedef int  (__fastcall *Ins2Fn)(void* self, void* edx, char* prim, int depth);
 // ---- config / log ----------------------------------------------------------------------------
 static FILE* g_log;
 static int   g_enabled = 1;
-static int   g_hotkey = VK_F12;
+static int   g_hotkey = VK_OEM_PLUS;   // the =/+ key (same key code on every keyboard layout); numpad + works too
 static int   g_debug = 0;
 static int   g_bench = 0;
 static int   g_fpsCap = -1;
+static int   g_toggleMsg = 1;   // show a message when the hotkey is pressed (on/off, frame rate)
 static int   g_simLoadMs = 0;   // test only: extra ms of work per in-between frame (simulates slow hardware)   // -1 = monitor refresh, 0 = uncapped, >0 = fps     // >0: render this many extra frames per tick back-to-back and log timings
 static float g_maxMove = 2500.0f;   // view-space units per tick beyond which we treat it as a cut
 static float g_minDot = 0.5f;       // axis dot below which (>60 deg in one tick) we don't blend
+
+// The on/off key is read with GetAsyncKeyState, which sees key presses system-wide; only count it while one of
+// the game's windows is in the foreground (keys get typed in other apps, e.g. chat, while the game runs).
+static int HotkeyDown() {
+    int down = (GetAsyncKeyState(g_hotkey) & 0x8000) != 0;
+    if (g_hotkey == VK_OEM_PLUS) down |= (GetAsyncKeyState(VK_ADD) & 0x8000) != 0;   // numpad + as a twin of =
+    if (!down) return 0;
+    DWORD pid = 0; HWND fg = GetForegroundWindow();
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+// ---- toggle message --------------------------------------------------------------------------
+// A small always-on-top, click-through, non-activating layered window in the lower right corner of the
+// game window, owned by its own thread (the game thread only posts to it). It is independent of how the
+// game renders (DirectDraw / D3D9 / D3D11 / dgVoodoo); it is not visible in exclusive fullscreen.
+#define WM_REUNCAP_SHOW (WM_APP + 1)
+static HWND g_toastWnd; static HANDLE g_toastReady;
+static char g_toastText[128]; static HWND g_toastGame;
+static void ToastPaint() {
+    RECT cr; if (!g_toastGame || !GetClientRect(g_toastGame, &cr)) return;
+    POINT org = { 0, 0 }; ClientToScreen(g_toastGame, &org);
+    int gh = cr.bottom - cr.top, gw = cr.right - cr.left;
+    int fh = gh / 26; if (fh < 14) fh = 14; if (fh > 48) fh = 48;
+    HDC sdc = GetDC(0), dc = CreateCompatibleDC(sdc);
+    HFONT font = CreateFontA(-fh, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI");
+    HGDIOBJ of = SelectObject(dc, font);
+    SIZE ts; GetTextExtentPoint32A(dc, g_toastText, (int)strlen(g_toastText), &ts);
+    int pad = fh / 2, w = ts.cx + pad * 2, h = ts.cy + pad;
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    DWORD* px = 0; HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&px, 0, 0);
+    if (!bmp) { SelectObject(dc, of); DeleteObject(font); DeleteDC(dc); ReleaseDC(0, sdc); return; }
+    HGDIOBJ ob = SelectObject(dc, bmp);
+    memset(px, 0, (size_t)w * h * 4);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+    TextOutA(dc, pad, pad / 2, g_toastText, (int)strlen(g_toastText));
+    GdiFlush();
+    // GDI wrote white text on black without alpha: coverage -> premultiplied white text, no background
+    for (int i = 0; i < w * h; i++) {
+        DWORD cov = px[i] & 0xFF;
+        px[i] = (cov << 24) | (cov << 16) | (cov << 8) | cov;
+    }
+    int margin = gh / 40;
+    POINT dst = { org.x + gw - w - margin, org.y + gh - h - margin }, src = { 0, 0 };
+    SIZE sz = { w, h };
+    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    UpdateLayeredWindow(g_toastWnd, sdc, &dst, &sz, dc, &src, 0, &bf, ULW_ALPHA);
+    SetWindowPos(g_toastWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SelectObject(dc, ob); DeleteObject(bmp); SelectObject(dc, of); DeleteObject(font);
+    DeleteDC(dc); ReleaseDC(0, sdc);
+}
+static LRESULT CALLBACK ToastProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    if (m == WM_REUNCAP_SHOW) { ToastPaint(); SetTimer(h, 1, 4000, 0); return 0; }
+    if (m == WM_TIMER) { KillTimer(h, 1); ShowWindow(h, SW_HIDE); return 0; }
+    if (m == WM_NCHITTEST) return HTTRANSPARENT;
+    if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcA(h, m, wp, lp);
+}
+static DWORD WINAPI ToastThread(LPVOID) {
+    WNDCLASSA wc; memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = ToastProc; wc.hInstance = GetModuleHandleA(0); wc.lpszClassName = "REuncapToggleMessage";
+    RegisterClassA(&wc);
+    g_toastWnd = CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                 wc.lpszClassName, "REuncap", WS_POPUP, 0, 0, 1, 1, 0, 0, wc.hInstance, 0);
+    SetEvent(g_toastReady);
+    MSG msg;
+    while (GetMessageA(&msg, 0, 0, 0) > 0) DispatchMessageA(&msg);
+    return 0;
+}
+static void ShowMessage(const char* text) {
+    if (!g_toggleMsg) return;
+    if (!g_toastReady) {
+        g_toastReady = CreateEventA(0, TRUE, FALSE, 0);
+        HANDLE th = CreateThread(0, 0, ToastThread, 0, 0, 0);
+        if (th) { WaitForSingleObject(g_toastReady, 1000); CloseHandle(th); }
+    }
+    if (!g_toastWnd) return;
+    strcpy_s(g_toastText, text);
+    g_toastGame = GetForegroundWindow();   // HotkeyDown() only fires while the game's window is in front
+    PostMessageA(g_toastWnd, WM_REUNCAP_SHOW, 0, 0);
+}
 
 static void Log(const char* fmt, ...) {
     if (!g_log) return;
@@ -447,7 +531,7 @@ static double FrameIntervalMs() {
     int cap = g_fpsCap;
     if (cap < 0) cap = g_refresh;
     if (cap == 0) return 0.0;
-    if (cap < 31) cap = 31;
+    if (cap < 30) cap = 30;   // 30 = the tick rate: no in-between frames
     return 1000.0 / cap;
 }
 static void NotePresent(double at) {
@@ -554,18 +638,45 @@ static void PaceExtraFrames(double P, RenderAtFn renderAt) {
 static char* g_re1Marni;
 static void Re1RenderAt(float t) { RenderIntermediate(g_re1Marni, t); }
 
+// The hotkey (ToggleKey, = by default): Shift + key switches REuncap on and off; the key alone steps the frame
+// rate cap through 30 / 60 / 90 / 120 / monitor refresh / uncapped (live only - reuncap.ini is not changed).
+static void PollHotkey(int* keyWas) {
+    int key = HotkeyDown();
+    if (key && !*keyWas) {
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+            g_enabled = !g_enabled;
+            Log("toggled: %s", g_enabled ? "ON" : "OFF");
+            ShowMessage(g_enabled ? "Enabled REuncap with hotkey." : "Disabled REuncap with hotkey.");
+        } else {
+            static const int kCaps[] = { 30, 60, 90, 120, -1, 0 };
+            const int n = sizeof kCaps / sizeof kCaps[0];
+            int i = 0; while (i < n && kCaps[i] != g_fpsCap) i++;
+            g_fpsCap = i < n ? kCaps[(i + 1) % n] : kCaps[0];
+            char m[128];
+            if (g_fpsCap > 0) sprintf_s(m, "FPS set to %d with hotkey.", g_fpsCap);
+            else if (g_fpsCap < 0) { UpdateRefresh(); sprintf_s(m, "FPS set to monitor refresh rate (%d) with hotkey.", g_refresh); }
+            else strcpy_s(m, "FPS set to uncapped with hotkey.");
+            if (!g_enabled) strcat_s(m, " (REuncap is disabled)");
+            Log("FpsCap set to %d with hotkey", g_fpsCap);
+            ShowMessage(m);
+        }
+    }
+    *keyWas = key;
+}
+
 static void __cdecl Governor_Hook(void) {
     static int keyWas;
-    int key = (GetAsyncKeyState(g_hotkey) & 0x8000) != 0;
-    if (key && !keyWas) { g_enabled = !g_enabled; Log("toggled: %s", g_enabled ? "ON" : "OFF"); }
-    keyWas = key;
+    PollHotkey(&keyWas);
 
     char* marni = *(char**)A_MARNI_PTR;
     int inGame = *(int*)A_TICK_MODE == 1;
     DWORD cut = *(DWORD*)A_STAGE_ROOM_CUT & 0x00FFFFFF;
     if (cut != g_lastCut) { g_cutHold = 2; g_lastCut = cut; }
 
-    int active = g_enabled && inGame && marni && *(int*)A_SCREEN_READY && *(unsigned char*)A_RENDER_READY;
+    // A_SKIP_SCENE: the game draws nothing (Classic REbirth 1.1.4's cutscene skip sets it and then runs the
+    // scene's ticks back to back to fast-forward it). Pacing extra frames there held the fast-forward to
+    // real time behind a black screen.
+    int active = g_enabled && inGame && marni && *(int*)A_SCREEN_READY && *(unsigned char*)A_RENDER_READY && !*(int*)A_SKIP_SCENE;
     if (active && g_bench > 0) {
         static double sum, mx, mn = 1e9, dsum, dmx; static int n, ticks;
         for (int k = 0; k < g_bench; k++) {
@@ -666,7 +777,8 @@ static char g_iniPath[MAX_PATH];
 static void LoadConfig(const char* dir) {
     char* ini = g_iniPath; sprintf_s(g_iniPath, "%sreuncap.ini", dir);
     g_enabled = GetPrivateProfileIntA("REuncap", "Enabled", 1, ini);
-    g_hotkey  = GetPrivateProfileIntA("REuncap", "ToggleKey", VK_F12, ini);
+    g_hotkey  = GetPrivateProfileIntA("REuncap", "ToggleKey", VK_OEM_PLUS, ini);
+    g_toggleMsg = GetPrivateProfileIntA("REuncap", "ToggleMessage", 1, ini);
     g_debug   = GetPrivateProfileIntA("REuncap", "DebugLog", 0, ini);
     g_bench   = GetPrivateProfileIntA("REuncap", "BenchFrames", 0, ini);
     g_fpsCap  = GetPrivateProfileIntA("REuncap", "FpsCap", -1, ini);
@@ -733,6 +845,17 @@ static void Init(HMODULE self) {
     }
     BYTE* dc = (BYTE*)A_DBGTXT_CALL;
     if (dc[0] == 0xE8) g_dbgTextFn = (ThisFn1)(A_DBGTXT_CALL + 5 + *(int*)(dc + 1));
+    // Classic REbirth (1.1.3 / 1.1.4) redirects this call into its own ddraw.dll. If it still points into the
+    // game's exe, the game is running without Classic REbirth (e.g. a launcher's "original executable" option
+    // with REuncap's files still in that folder): REuncap only supports Classic REbirth, so patch nothing.
+    {
+        HMODULE m = 0;
+        if (!g_dbgTextFn || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                (LPCSTR)g_dbgTextFn, &m) || m == GetModuleHandleA(0)) {
+            Log("Classic REbirth not detected (Resident Evil is running without it) - REuncap inactive");
+            return;
+        }
+    }
     g_TransformTramp = (TransformFn)Detour5(A_TRANSFORM, (void*)Transform_Hook, kTransform);
     if (!g_TransformTramp) { Log("unsupported Biohazard.exe (Transform prologue mismatch) - not patching"); return; }
     PatchCall(A_GOV_CALLSITE, (void*)Governor_Hook);

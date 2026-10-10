@@ -24,7 +24,7 @@ static const char* R3Name(DWORD a, char* buf) {
 }
 
 // Classic REbirth draws every packet through a handler table indexed by the GPU code (byte 7 of a packet).
-#define R3_DISPATCH_OFF 0x003EBEC0
+#define R3_DISPATCH_OFF (g_r3L.dispatch)   // per Classic REbirth build, see R3Layout in re3.inl
 typedef void (__cdecl *R3HandlerFn)(BYTE* pkt);
 static R3HandlerFn g_r3Handlers[256];
 

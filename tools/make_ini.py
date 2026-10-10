@@ -7,18 +7,30 @@ import sys
 ENTRIES = [
     ("Enabled", "1", [
         "1 = high-framerate presentation on, 0 = off (vanilla 30 fps)",
-        "You can also switch the mod on and off while playing with a hotkey: F12 by default,",
-        "changed with ToggleKey below.",
+        "You can also switch the mod on and off while playing: Shift + the hotkey (Shift + = by default,",
+        "numpad + works too), see ToggleKey below.",
     ]),
     ("FpsCap", "-1", [
         "Frame rate cap while playing. Game logic always stays at the original 30 ticks/s.",
         "  -1  = your monitor refresh rate (default)",
         "   0  = uncapped (as fast as the display path allows)",
-        "  60, 120, 144, 165, 190, 240 ... = that many fps (any number from 31 up)",
+        "  60, 120, 144, 165, 190, 240 ... = that many fps (any number from 30 up; 30 = no in-between frames)",
         "With G-Sync/FreeSync, a cap a few fps below the refresh rate gives the most even pacing.",
     ]),
-    ("ToggleKey", "123", [
-        "virtual-key code of the in-game on/off toggle (123 = F12)",
+    ("ToggleKey", "187", [
+        "The in-game hotkey (virtual-key code; 187 = the =/+ key on any keyboard layout,",
+        "with numpad + as a second key; 123 = F12).",
+        "  Shift + key = switch REuncap on and off",
+        "  key alone   = change the frame rate cap while playing: 30, 60, 90, 120, monitor refresh,",
+        "                uncapped, then 30 again (this lasts until the game is closed; FpsCap above",
+        "                is the frame rate the game starts with)",
+    ]),
+    ("ToggleMessage", "1", [
+        "1 = show a message for 4 seconds in the lower right corner of the game window when the hotkey",
+        "    is pressed, e.g. \"Disabled REuncap with hotkey.\" or \"FPS set to 60 with hotkey.\" (default)",
+        "0 = no message",
+        "The message is a small window over the game: it shows in windowed and borderless fullscreen,",
+        "not in exclusive fullscreen, and not in OBS \"game capture\" recordings.",
     ]),
     ("DebugLog", "0", [
         "1 = write fps / pacing / tick-rate stats to reuncap.log every 2 s",

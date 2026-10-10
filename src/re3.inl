@@ -16,20 +16,42 @@
 // the joint slots, re-run CR's own projection into scratch arrays, patch the packets' screen xy/z,
 // run CR's frame render, then restore the joints, the packets and the game memory the render touches.
 
-#define R3_TICK_CALL     0x000C2BB4   // CR main loop: call CR+0xC2090 (runs a tick when the grid line is crossed)
-#define R3_TICK_FN       0x000C2090
-#define R3_RENDER_CALL_  0x0007BE2A   // call CR+0x7B730 (frame render: OT walk + present)
-#define R3_RENDER_FN     0x0007B730
-#define R3_PROJ_A_CALL   0x000B32C7   // call CR+0xB1D10 (projection, part flag 0x400 clear)
-#define R3_PROJ_A_FN     0x000B1D10
-#define R3_PROJ_B_CALL   0x000B320B   // call CR+0xB1EC0 (projection, part flag 0x400 set)
-#define R3_PROJ_B_FN     0x000B1EC0
+// Classic REbirth offsets differ per build; a layout is picked at start-up by checking every hooked call
+// site against the running CR (1.0.2 offsets were found by matching 1.0.3's code, see MODLOG).
+struct R3Layout {
+    const char* name;
+    DWORD tickCall, tickFn, renderCall, renderFn;
+    DWORD projCall[6], projFn[6];          // A, B, then the 4 seam passes
+    DWORD pktPtr, zdivOff, zdivCode, dispatch, addPrimPtr, crFlag;
+    DWORD walkFn, walkCallA, walkCallB, e1Fn;
+};
+static const R3Layout kR3Layouts[] = {
+    { "1.0.3", 0xC2BB4, 0xC2090, 0x7BE2A, 0x7B730,
+      { 0xB32C7, 0xB320B, 0xB3245, 0xB3282, 0xB3301, 0xB333A }, { 0xB1D10, 0xB1EC0, 0xB29A0, 0xB2660, 0xB2420, 0xB2100 },
+      0x4FB11C, 0x3F6230, 0xB2D46, 0x3EBEC0, 0x36D0, 0x401220, 0x7AA40, 0x7BC2B, 0x7BC6D, 0x8B540 },
+    { "1.0.2", 0xBC894, 0xBBC50, 0x7B79A, 0x7B0A0,
+      { 0xAD0F7, 0xAD03B, 0xAD075, 0xAD0B2, 0xAD131, 0xAD16A }, { 0xABB40, 0xABCF0, 0xAC7D0, 0xAC490, 0xAC250, 0xABF30 },
+      0x491254, 0x38EBC8, 0xACB76, 0x385000, 0x36D0, 0x3991A8, 0x7A3F0, 0x7B59B, 0x7B5DD, 0x8A070 },
+    { "1.0.1", 0xB15A7, 0xB09D0, 0x76E99, 0x76810,
+      { 0xA25C7, 0xA250B, 0xA2545, 0xA2582, 0xA2601, 0xA263A }, { 0xA1080, 0xA1200, 0xA1CC0, 0xA1980, 0xA1740, 0xA1420 },
+      0x604838, 0x302BB8, 0xA204F, 0x2FB4C0, 0x36D0, 0x30D684, 0x75F30, 0x76CDB, 0x76D3E, 0x7F570 },
+};
+static R3Layout g_r3L = kR3Layouts[0];
+static DWORD g_r3ProjFn[6];               // the projection stubs read their target from here
+#define R3_TICK_CALL     (g_r3L.tickCall)    // CR main loop: call the tick function (runs a tick when the grid line is crossed)
+#define R3_TICK_FN       (g_r3L.tickFn)
+#define R3_RENDER_CALL_  (g_r3L.renderCall)  // call the frame render (OT walk + present)
+#define R3_RENDER_FN     (g_r3L.renderFn)
+#define R3_PROJ_A_CALL   (g_r3L.projCall[0]) // projection, part flag 0x400 clear
+#define R3_PROJ_A_FN     (g_r3L.projFn[0])
+#define R3_PROJ_B_CALL   (g_r3L.projCall[1]) // projection, part flag 0x400 set
+#define R3_PROJ_B_FN     (g_r3L.projFn[1])
 // secondary passes (seam vertices: projected under a second joint and averaged into the same arrays)
-static const DWORD kR3Pass2Call[4] = { 0x000B3245, 0x000B3282, 0x000B3301, 0x000B333A };
-static const DWORD kR3Pass2Fn[4]   = { 0x000B29A0, 0x000B2660, 0x000B2420, 0x000B2100 };
-#define R3_PKT_PTR       0x004FB11C   // CR: float packet allocation pointer
-#define R3_ZDIV_OFF      0x003F6230   // CR: float, packet z = SZ / this
-#define R3_ZDIV_CODE     0x000B2D46   // movss xmm1, [CR+0x3F6230] in the tri emitter
+#define kR3Pass2Call     (g_r3L.projCall + 2)
+#define kR3Pass2Fn       (g_r3L.projFn + 2)
+#define R3_PKT_PTR       (g_r3L.pktPtr)      // CR: float packet allocation pointer
+#define R3_ZDIV_OFF      (g_r3L.zdivOff)     // CR: float, packet z = SZ / this
+#define R3_ZDIV_CODE     (g_r3L.zdivCode)    // movss xmm1, [zdiv] in the tri emitter
 #define R3_VSYNC_CNT     0x00A67CD4   // byte: VSync count per tick (2 = 30 fps gameplay, 1 = 60 fps menus)
 #define R3_CAMERA        0x0051F818   // PSX MATRIX: camera
 #define R3_GTE_PTR       0x00539C18   // GTE object
@@ -177,7 +199,7 @@ static void __cdecl R3ProjImpl(float* xy, WORD* sz, DWORD* ctx, BYTE* stream, DW
 static __declspec(naked) void name() { __asm { \
     __asm mov eax, esp \
     __asm push sec \
-    __asm push fnoff \
+    __asm push dword ptr [g_r3ProjFn + fnoff * 4] \
     __asm push dword ptr [eax + 8] \
     __asm push dword ptr [eax + 4] \
     __asm push edx \
@@ -187,12 +209,12 @@ static __declspec(naked) void name() { __asm { \
     __asm call R3ProjImpl \
     __asm add esp, 24 \
     __asm ret } }
-R3_PROJ_STUB(R3ProjHookA, 0x000B1D10, 0)
-R3_PROJ_STUB(R3ProjHookB, 0x000B1EC0, 0)
-R3_PROJ_STUB(R3Proj2Hook0, 0x000B29A0, 1)
-R3_PROJ_STUB(R3Proj2Hook1, 0x000B2660, 1)
-R3_PROJ_STUB(R3Proj2Hook2, 0x000B2420, 1)
-R3_PROJ_STUB(R3Proj2Hook3, 0x000B2100, 1)
+R3_PROJ_STUB(R3ProjHookA, 0, 0)
+R3_PROJ_STUB(R3ProjHookB, 1, 0)
+R3_PROJ_STUB(R3Proj2Hook0, 2, 1)
+R3_PROJ_STUB(R3Proj2Hook1, 3, 1)
+R3_PROJ_STUB(R3Proj2Hook2, 4, 1)
+R3_PROJ_STUB(R3Proj2Hook3, 5, 1)
 static void (*const kR3Pass2Hook[4])() = { R3Proj2Hook0, R3Proj2Hook1, R3Proj2Hook2, R3Proj2Hook3 };
 
 // After the tick's emission: close the packet ranges and map every packet corner to its vertex.
@@ -265,7 +287,7 @@ static void R3BuildVertexMap() {
 // hooking its pointer yields every float model packet in emission order. At the end of a tick the list
 // is aligned with the previous tick's (same polygon = same texture words, emitted in the same order);
 // matched corners are interpolated in screen space. Packets the joint path re-projects are skipped.
-#define R3_ADDPRIM_PTR   0x000036D0
+#define R3_ADDPRIM_PTR   (g_r3L.addPrimPtr)
 #define R3_MAX_PK        12000
 #define R3_MAXMOVE_PX    48.0f        // screen units (320x240 space) per tick beyond which we don't blend
 struct R3Pk { BYTE* p; DWORD sig, tag; BYTE nc, joint, lerp; float cur[4][3], prev[4][3]; };
@@ -508,6 +530,20 @@ static void R3FxCentre(const BYTE* p, const R3FxLay* l, float* cx, float* cy) {
     *cx = x / l->nv; *cy = y / l->nv;
 }
 static int g_r3FxRelaxed;
+// DebugLog >= 2 census of 2D packets moved in in-between frames, by (type, palette, texture page): finds
+// which group is the font (stand still while a message types out - the text is what moves then).
+struct R3FxCen { WORD code, clut, tpage; int moved, relaxed; short x0, y0, x1, y1; };
+static R3FxCen g_r3Cen[64]; static int g_r3CenN;
+static void R3FxCensus(const BYTE* p, const R3FxLay* l, int relaxed) {
+    BYTE c = p[7] & 0xFC; WORD clut = 0, tpage = 0;
+    if (c == 0x24 || c == 0x2C || c == 0x34 || c == 0x3C) { clut = *(WORD*)(p + l->sig[0] + 2); tpage = *(WORD*)(p + l->sig[1] + 2); }
+    else if (c == 0x64 || c == 0x74 || c == 0x7C) clut = *(WORD*)(p + 14);
+    short x = *(short*)(p + l->xy[0]), y = *(short*)(p + l->xy[0] + 2);
+    int i = 0; while (i < g_r3CenN && !(g_r3Cen[i].code == c && g_r3Cen[i].clut == clut && g_r3Cen[i].tpage == tpage)) i++;
+    if (i == g_r3CenN) { if (g_r3CenN >= 64) return; g_r3CenN++; R3FxCen z = { c, clut, tpage, 0, 0, x, y, x, y }; g_r3Cen[i] = z; }
+    R3FxCen& e = g_r3Cen[i]; if (relaxed) e.relaxed++; else e.moved++;
+    if (x < e.x0) e.x0 = x; if (y < e.y0) e.y0 = y; if (x > e.x1) e.x1 = x; if (y > e.y1) e.y1 = y;
+}
 static DWORD R3FxSig(const BYTE* p, const R3FxLay* l) {
     DWORD h = p[7] * 0x01000193u;
     for (int i = 0; i < l->nsig; i++) h = (h ^ *(DWORD*)(p + l->sig[i])) * 0x01000193u;
@@ -527,6 +563,10 @@ static void __cdecl R3FxHandler(BYTE* p) {
         g_r3Handlers[code](p); return;
     }
     if (!g_r3InExtra) { g_r3Handlers[code](p); return; }
+    // Screen-aligned sprites (SPRT / SPRT8 / SPRT16) are text and interface graphics: never moved. A message
+    // typing out adds new letters every tick, and those got matched to a neighbouring letter and slid in.
+    BYTE fam = code & 0xFC;
+    if (fam == 0x64 || fam == 0x74 || fam == 0x7C) { g_r3Handlers[code](p); return; }
     // in-between frame: find last tick's twin (same type/texture, nearest anchor)
     DWORD sig = R3FxSig(p, l);
     short x0 = *(short*)(p + l->xy[0]), y0 = *(short*)(p + l->xy[0] + 2);
@@ -562,6 +602,7 @@ static void __cdecl R3FxHandler(BYTE* p) {
         float ox = (g_r3FxPrev[rb].cx - cx) * (1.0f - g_r3FxT), oy = (g_r3FxPrev[rb].cy - cy) * (1.0f - g_r3FxT);
         short sx = (short)floorf(ox + 0.5f), sy = (short)floorf(oy + 0.5f);
         if (!sx && !sy) { g_r3Handlers[code](p); return; }
+        if (g_debug >= 2) R3FxCensus(p, l, 1);
         for (int v = 0; v < l->nv; v++) { short* q = (short*)(p + l->xy[v]); q[0] += sx; q[1] += sy; }
         g_r3Handlers[code](p);
         for (int v = 0; v < l->nv; v++) { short* q = (short*)(p + l->xy[v]); q[0] -= sx; q[1] -= sy; }
@@ -572,6 +613,7 @@ static void __cdecl R3FxHandler(BYTE* p) {
     for (int v = 0; v < l->nv; v++) if (f.xy[v][0] != *(short*)(p + l->xy[v]) || f.xy[v][1] != *(short*)(p + l->xy[v] + 2)) moved = 1;
     if (g_debug >= 2) { g_r3FxCnt[code]++; if (moved) g_r3FxMoved[code]++; }
     if (!moved) { g_r3Handlers[code](p); return; }
+    if (g_debug >= 2) R3FxCensus(p, l, 0);
     short saved[4][2];
     float t = g_r3FxT;
     for (int v = 0; v < l->nv; v++) {
@@ -615,7 +657,154 @@ static int R3InstallFx() {
     return n;
 }
 
+// ---- crash guard ---------------------------------------------------------------------------------
+// A crash inside Classic REbirth's renderer is logged with where it happened (in-between frame or the
+// game's own frame), the bad pointer and the code addresses on the stack. A crash inside an in-between
+// frame is caught: game memory is restored as after any extra frame and in-between frames pause for a
+// few seconds, so the game keeps running.
+static int g_r3Suspend, g_r3ExtraCrashes, g_r3CrashLogs;
+// The tick after a stall (a lost tick that is not a camera cut - e.g. the tram boss fight loading its event
+// data) gets no in-between frames: twice the tram crash came on exactly that tick, with a packet list linking
+// into just-reused memory that a re-render of the tick followed.
+static int g_r3AfterStall, g_r3StallSkips;
+static void R3LogCrash(EXCEPTION_POINTERS* e, const char* where) {
+    if (g_r3CrashLogs >= 12) return;
+    g_r3CrashLogs++;
+    char a[16], b[16]; CONTEXT* c = e->ContextRecord; EXCEPTION_RECORD* x = e->ExceptionRecord;
+    Log("RE3 CRASH (%s): code %08lX at %s, access %s %08lX; eax %08lX ecx %08lX edx %08lX esi %08lX edi %08lX",
+        where, x->ExceptionCode, R3Name((DWORD)x->ExceptionAddress, a),
+        x->NumberParameters >= 2 ? (x->ExceptionInformation[0] ? "write" : "read") : "-", x->NumberParameters >= 2 ? (DWORD)x->ExceptionInformation[1] : 0,
+        c->Eax, c->Ecx, c->Edx, c->Esi, c->Edi);
+    char line[512]; int o = 0, n = 0;
+    __try {
+        DWORD* sp = (DWORD*)c->Esp;
+        for (int i = 0; i < 256 && n < 14; i++) if (R3InCode(sp[i])) { o += sprintf_s(line + o, sizeof line - o, " %s", R3Name(sp[i], b)); n++; }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    line[o] = 0;
+    Log("    stack:%s", line);
+    Log("    state: vsync %d bg reload %d bg flags %02X cut %d/%d  model packets %d  2D packets last tick %d  parts %d  tick %d",
+        *(BYTE*)R3_VSYNC_CNT, *(BYTE*)R3_BG_RELOAD, *(BYTE*)R3_BG_FLAGS, *(BYTE*)R3_BG_CUT, *(WORD*)R3_BG_DRAWN, g_r3PkN, g_r3FxPrevN, g_r3PartN, g_r3TickN);
+}
+static LONG CALLBACK R3Veh(EXCEPTION_POINTERS* e) {
+    DWORD code = e->ExceptionRecord->ExceptionCode, at = (DWORD)e->ExceptionRecord->ExceptionAddress;
+    if ((code == EXCEPTION_ACCESS_VIOLATION || code == STATUS_STACK_BUFFER_OVERRUN || code == EXCEPTION_ILLEGAL_INSTRUCTION) &&
+        at >= g_r3CrBase && at < g_r3CrEnd)
+        R3LogCrash(e, g_r3InExtra ? "in-between frame" : "game frame");
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static int R3ExtraFilter(EXCEPTION_POINTERS* e) {
+    DWORD code = e->ExceptionRecord->ExceptionCode;
+    return (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+}
+// ---- packet link words ---------------------------------------------------------------------------
+// Classic REbirth's frame render walks these packet lists (CR+7BBF0..7BC9B) and rewrites some link words on
+// the way. The game renders each tick once, so it never notices; an in-between frame renders it again, and
+// in some scenes (the tram boss fight) a second walk followed a rewritten link into garbage and crashed.
+// So every link word on these lists is recorded before the in-between frames and put back after each one.
+#define R3_OT_LAYERS   0x00A61FF8   // number of layer lists
+#define R3_OT_FLAGS    0x00A61FF4   // >= 0: the render ends each list at buffer + 0x1C
+#define R3_OT_BUFIDX   0x00A61C90   // byte: double-buffer index
+#define R3_OT_LAYERTAB 0x00A61C10   // layer list buffers [(layer + idx * 4) * 4]
+#define R3_OT_MAIN     0x00A61BC4   // main list buffer
+#define R3_OT_EXTRA    0x00A5FBC0   // list walked after the main one (+0x1C)
+#define R3_MAX_LINK    65536
+static DWORD* g_r3LinkAt; static DWORD* g_r3LinkVal; static int g_r3LinkN, g_r3LinkFixed, g_r3LinkBad;
+static int g_r3LinkCode[256];
+// stop: the render zeroes that entry's link before walking (the list ends there), 0 = walk to the end
+static int R3LinkWalk(DWORD head, DWORD stop) {
+    DWORD* node = (DWORD*)head;
+    for (int guard = 0; node && guard < R3_MAX_LINK; guard++) {
+        if (IsBadReadPtr(node, 8)) return 0;
+        if (g_r3LinkN >= R3_MAX_LINK) return 0;
+        g_r3LinkAt[g_r3LinkN] = (DWORD)node; g_r3LinkVal[g_r3LinkN++] = *node;
+        if ((DWORD)node == stop) break;
+        node = (DWORD*)(*node & ~3u);
+    }
+    return 1;
+}
+// Returns 0 if a list is broken already (then no in-between frames this tick).
+static int R3LinkSnap() {
+    if (!g_r3LinkAt) { g_r3LinkAt = (DWORD*)malloc(R3_MAX_LINK * 4); g_r3LinkVal = (DWORD*)malloc(R3_MAX_LINK * 4); }
+    g_r3LinkN = 0;
+    int ok = 1;
+    __try {
+        int layers = *(int*)R3_OT_LAYERS, idx = *(BYTE*)R3_OT_BUFIDX, cut = *(int*)R3_OT_FLAGS >= 0;
+        for (int l = layers; l > 0 && l < 64 && ok; l--) {
+            DWORD buf = *(DWORD*)(R3_OT_LAYERTAB + (l + idx * 4) * 4);
+            if (buf) ok &= R3LinkWalk(buf + 0xFFC, cut ? buf + 0x1C : 0);
+        }
+        DWORD m = *(DWORD*)R3_OT_MAIN; if (m && ok) ok &= R3LinkWalk(m + 0xFFC, cut ? m + 0x1C : 0);
+        DWORD x = *(DWORD*)R3_OT_EXTRA; if (x && ok) ok &= R3LinkWalk(x + 0x1C, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { ok = 0; }
+    return ok;
+}
+static void R3LinkRestore() {
+    __try {
+        for (int i = 0; i < g_r3LinkN; i++) {
+            DWORD* a = (DWORD*)g_r3LinkAt[i];
+            if (*a != g_r3LinkVal[i]) { g_r3LinkFixed++; if (g_debug >= 2) g_r3LinkCode[((BYTE*)a)[7]]++; *a = g_r3LinkVal[i]; }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// ---- safe list walker ------------------------------------------------------------------------------
+// Replaces Classic REbirth's list walker CR+7AA40 (both call sites, CR+7BC2B / CR+7BC6D) with the same loop
+// that also remembers the previous packet. In the tram boss fight a list link was found pointing into
+// another packet's vertex data during an in-between frame; the walk then ends cleanly at that point (the
+// rest of that list is not drawn in that one frame) and the bad link is logged, instead of crashing.
+#define R3_WALK_FN     (g_r3L.walkFn)
+#define R3_WALK_CALL_A (g_r3L.walkCallA)
+#define R3_WALK_CALL_B (g_r3L.walkCallB)
+#define R3_E1_FN       (g_r3L.e1Fn)
+static int g_r3WalkBad, g_r3WalkLogs;
+static int R3WalkFilter(EXCEPTION_POINTERS* e, BYTE* prev, BYTE* cur) {
+    g_r3WalkBad++;
+    if (g_r3WalkLogs < 8) {
+        g_r3WalkLogs++;
+        char a[16];
+        Log("RE3 list walk stopped (%s): bad link %08X at %s, exception %08lX", g_r3InExtra ? "in-between frame" : "game frame",
+            (DWORD)cur, R3Name((DWORD)e->ExceptionRecord->ExceptionAddress, a), e->ExceptionRecord->ExceptionCode);
+        if (prev) {
+            int rec = -1; for (int i = 0; i < g_r3LinkN; i++) if (g_r3LinkAt[i] == (DWORD)prev) { rec = i; break; }
+            __try {
+                DWORD* d = (DWORD*)prev;
+                Log("    previous packet %08X code %02X, link now %08X, link at tick start %s%08X; words: %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+                    (DWORD)prev, prev[7], d[0], rec >= 0 ? "" : "(not on a recorded list) ", rec >= 0 ? g_r3LinkVal[rec] : 0,
+                    d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12]);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+static void __fastcall R3WalkHook(BYTE* p, void*) {
+    if (*(BYTE*)R3_BG_RELOAD) return;
+    R3HandlerFn* tbl = (R3HandlerFn*)R3Cr(R3_DISPATCH_OFF);
+    BYTE* prev = 0;
+    __try {
+        for (int n = 0; p && n < 1000000; n++) {
+            if (*p & 3) {
+                BYTE c = p[7];
+                if (c == 0xE1) {
+                    ((void (__cdecl*)(BYTE*))R3Cr(R3_E1_FN))(p);
+                    BYTE c2 = p[0xB];
+                    if (c2 == 0x64 || c2 == 0x74 || c2 == 0x7C) tbl[c2](p + 4);
+                } else if (c >= 0x10) tbl[c](p);
+            }
+            prev = p; p = (BYTE*)(*(DWORD*)p & ~3u);
+        }
+    } __except (R3WalkFilter(GetExceptionInformation(), prev, p)) {}
+}
+
+static void R3DrawExtra() {
+    __try { ((void(*)())R3Cr(R3_RENDER_FN))(); }
+    __except (R3ExtraFilter(GetExceptionInformation())) {
+        g_r3ExtraCrashes++; g_r3Suspend = 90;
+        Log("RE3: an in-between frame crashed inside Classic REbirth - caught, in-between frames paused for 3 s");
+    }
+}
+
 static void R3RenderAt(float t) {
+    if (g_r3Suspend) return;    // an in-between frame crashed this tick: no more of them for now
     // 1. blended joints
     static R3Mtx saved[R3_MAX_JOINT]; static int savedIdx[R3_MAX_JOINT]; int ns = 0;
     __try {
@@ -665,10 +854,11 @@ static void R3RenderAt(float t) {
     for (int k = 0; k < ns; k++) { R3Joint& c = g_r3Jcur[savedIdx[k]]; *R3JointPtr(c.obj, c.j) = saved[k]; }
     // 4. render + present, then undo everything the render changed
     g_r3InExtra = 1; g_r3FxT = t; g_r3FxCursor = 0; g_r3SealFrame++;
-    ((void(*)())R3Cr(R3_RENDER_FN))();
+    R3DrawExtra();
     g_r3InExtra = 0;
+    R3LinkRestore();
     memcpy((void*)R3_STATE_LO, g_r3StateSnap, R3_STATE_HI - R3_STATE_LO);
-    *(BYTE*)R3Cr(0x401220) = g_r3CrFlagSnap;
+    *(BYTE*)R3Cr(g_r3L.crFlag) = g_r3CrFlagSnap;
     for (int k = 0; k < g_r3VtxN; k++) { R3Vtx& e = g_r3Vtx[k]; e.xy[0] = e.ox; e.xy[1] = e.oy; *e.z = e.oz; }
     R3GenericRestore();
     g_r3Extras++;
@@ -687,9 +877,7 @@ static void __cdecl R3TickPoll() {
 
 static void __cdecl R3Render() {
     static int keyWas;
-    int key = (GetAsyncKeyState(g_hotkey) & 0x8000) != 0;
-    if (key && !keyWas) { g_enabled = !g_enabled; Log("toggled: %s", g_enabled ? "ON" : "OFF"); }
-    keyWas = key;
+    PollHotkey(&keyWas);
 
     double now = NowMs();
     if (g_tickStart > 0) {
@@ -697,6 +885,7 @@ static void __cdecl R3Render() {
         if (d > 25.0 && d < 45.0) g_tickPeriod = g_tickPeriod * 0.95 + d * 0.05;
         if (*(BYTE*)R3_VSYNC_CNT == 2 && d > g_tickPeriod * 1.5) {
             g_r3Lost++;
+            if (!g_r3PrevCut) g_r3AfterStall = 1;   // the background load after a cut is a normal, known stall
             if (g_r3PrevRealEnd > g_tickStart + g_tickPeriod) g_r3LostLate++;
             if (g_r3PrevCut) g_r3LostAfterCut++;
             if (g_debug >= 2) Log("    lost tick: gap %.1f ms, prev tick extras %d, prev real render ended at %.1f ms, prev cut %d",
@@ -714,12 +903,15 @@ static void __cdecl R3Render() {
     int bgCut = (!(*(BYTE*)R3_BG_FLAGS & 0x40) && *(WORD*)R3_BG_DRAWN != *(BYTE*)R3_BG_CUT) || *(BYTE*)R3_BG_RELOAD;
     int cut = bgCut || memcmp(&g_r3CamCur, &g_r3CamPrev, sizeof(R3Mtx)) != 0;
     int vs = *(BYTE*)R3_VSYNC_CNT;
-    g_r3Active = g_enabled && vs == 2 && g_r3HavePrev && !cut && !g_r3Overflow && (g_r3PartN > 0 || g_r3PkN > 0);
+    if (g_r3Suspend > 0) g_r3Suspend--;
+    int stallSkip = g_r3AfterStall; g_r3AfterStall = 0; g_r3StallSkips += stallSkip;
+    g_r3Active = g_enabled && vs == 2 && g_r3HavePrev && !cut && !g_r3Overflow && (g_r3PartN > 0 || g_r3PkN > 0) && !g_r3Suspend && !stallSkip;
     if (!g_enabled) g_r3Why[0]++; else if (vs != 2) g_r3Why[1]++; else if (g_r3PartN <= 0 && g_r3PkN <= 0) g_r3Why[2]++;
     else if (!g_r3HavePrev) g_r3Why[3]++; else if (cut) g_r3Why[4]++; else if (g_r3Overflow) g_r3Why[5]++;
+    if (g_r3Active && !R3LinkSnap()) { g_r3Active = 0; g_r3LinkBad++; }   // a list is broken: no extras
     if (g_r3Active) {
         memcpy(g_r3StateSnap, (void*)R3_STATE_LO, R3_STATE_HI - R3_STATE_LO);
-        g_r3CrFlagSnap = *(BYTE*)R3Cr(0x401220);
+        g_r3CrFlagSnap = *(BYTE*)R3Cr(g_r3L.crFlag);
         DWORD gte = *(DWORD*)R3_GTE_PTR;
         __try { memcpy(g_r3GteSnap, (void*)gte, sizeof g_r3GteSnap); } __except (EXCEPTION_EXECUTE_HANDLER) { gte = 0; }
         // one slow extra frame (e.g. first frame after a room load) must not block extra frames for good:
@@ -779,12 +971,25 @@ static void __cdecl R3Render() {
             Log("    generic objects per tick (max) %d; old order-only matching would have paired different objects %d times", g_r3TagsMax, g_r3OldCross);
             g_r3FloatDrawn = g_r3FloatCollected = g_r3GenFar = 0; g_r3TagsMax = g_r3OldCross = 0;
             Log("    2D relaxed (animated) matches %d", g_r3FxRelaxed); g_r3FxRelaxed = 0;
+            for (int k = 0; k < g_r3CenN; k++)
+                Log("    2D moved group: code %02X clut %04X tpage %04X  moved %d relaxed %d  area x %d..%d y %d..%d",
+                    g_r3Cen[k].code, g_r3Cen[k].clut, g_r3Cen[k].tpage, g_r3Cen[k].moved, g_r3Cen[k].relaxed, g_r3Cen[k].x0, g_r3Cen[k].x1, g_r3Cen[k].y0, g_r3Cen[k].y1);
+            g_r3CenN = 0;
             if (o) Log("    2D packets in extra frames (code:drawn/moved/unmatched):%s", line);
             memset(g_r3FxCnt, 0, sizeof g_r3FxCnt); memset(g_r3FxMoved, 0, sizeof g_r3FxMoved); memset(g_r3FxMiss, 0, sizeof g_r3FxMiss);
         }
         Log("    generic packets per tick: matched %d, via shared corners %d, static %d", g_r3GenMatched / (g_r3TickN ? g_r3TickN : 1), g_r3GenMapped / (g_r3TickN ? g_r3TickN : 1), g_r3GenStatic / (g_r3TickN ? g_r3TickN : 1));
         g_r3GenMatched = g_r3GenMapped = g_r3GenStatic = 0;
         Log("    extra frame cost peak %.2f ms; lost ticks %d (our render late %d, after a camera change %d)", g_frameCostPeak, g_r3Lost, g_r3LostLate, g_r3LostAfterCut);
+        if (g_r3LinkFixed || g_r3LinkBad || g_debug >= 2) {
+            char line[512]; int o = 0;
+            for (int k = 0; k < 256; k++) if (g_r3LinkCode[k]) o += sprintf_s(line + o, sizeof line - o, " %02X:%d", k, g_r3LinkCode[k]);
+            line[o] = 0;
+            Log("    packet links: %d per tick recorded, %d rewritten by in-between renders (put back), %d ticks skipped (broken list), %d walks stopped at a bad link, %d ticks after a stall without extras%s%s",
+                g_r3LinkN, g_r3LinkFixed, g_r3LinkBad, g_r3WalkBad, g_r3StallSkips, o ? "; by code:" : "", line);
+            g_r3WalkBad = 0; g_r3StallSkips = 0;
+            g_r3LinkFixed = g_r3LinkBad = 0; memset(g_r3LinkCode, 0, sizeof g_r3LinkCode);
+        }
         g_r3Lost = g_r3LostLate = g_r3LostAfterCut = 0;
         if (g_debug >= 2) {
             Log("    draw paths per tick: 438500 %.1f calls (%d objs), 438690 %.1f calls (%d objs); projections %.1f",
@@ -802,16 +1007,23 @@ static int R3CheckCall(DWORD site, DWORD target) {
     BYTE* s = (BYTE*)R3Cr(site);
     return s[0] == 0xE8 && (DWORD)(s + 5 + *(int*)(s + 1)) == R3Cr(target);
 }
+static int R3LayoutMatches() {
+    __try {
+        BYTE* zc = (BYTE*)R3Cr(R3_ZDIV_CODE);
+        return R3CheckCall(R3_TICK_CALL, R3_TICK_FN) && R3CheckCall(R3_RENDER_CALL_, R3_RENDER_FN) &&
+               R3CheckCall(R3_PROJ_A_CALL, R3_PROJ_A_FN) && R3CheckCall(R3_PROJ_B_CALL, R3_PROJ_B_FN) &&
+               R3CheckCall(kR3Pass2Call[0], kR3Pass2Fn[0]) && R3CheckCall(kR3Pass2Call[1], kR3Pass2Fn[1]) &&
+               R3CheckCall(kR3Pass2Call[2], kR3Pass2Fn[2]) && R3CheckCall(kR3Pass2Call[3], kR3Pass2Fn[3]) &&
+               *(DWORD*)R3Cr(R3_ADDPRIM_PTR) == 0x425580 &&
+               zc[0] == 0xF3 && zc[1] == 0x0F && zc[2] == 0x10 && zc[3] == 0x0D && *(DWORD*)(zc + 4) == R3Cr(R3_ZDIV_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
 static void Re3InitInterp() {
-    // Classic REbirth 1.0.3 layout check: every hooked call site and the packet / z constants
-    BYTE* zc = (BYTE*)R3Cr(R3_ZDIV_CODE);
-    int ok = R3CheckCall(R3_TICK_CALL, R3_TICK_FN) && R3CheckCall(R3_RENDER_CALL_, R3_RENDER_FN) &&
-             R3CheckCall(R3_PROJ_A_CALL, R3_PROJ_A_FN) && R3CheckCall(R3_PROJ_B_CALL, R3_PROJ_B_FN) &&
-             R3CheckCall(kR3Pass2Call[0], kR3Pass2Fn[0]) && R3CheckCall(kR3Pass2Call[1], kR3Pass2Fn[1]) &&
-             R3CheckCall(kR3Pass2Call[2], kR3Pass2Fn[2]) && R3CheckCall(kR3Pass2Call[3], kR3Pass2Fn[3]) &&
-             *(DWORD*)R3Cr(R3_ADDPRIM_PTR) == 0x425580 &&
-             zc[0] == 0xF3 && zc[1] == 0x0F && zc[2] == 0x10 && zc[3] == 0x0D && *(DWORD*)(zc + 4) == R3Cr(R3_ZDIV_OFF);
-    if (!ok) { Log("RE3: Classic REbirth build not recognised (RE3 support needs Classic REbirth 1.0.3) - mod inactive"); return; }
+    // pick the Classic REbirth layout whose every hooked call site and constant matches the running CR
+    int ok = 0;
+    for (int i = 0; i < (int)(sizeof kR3Layouts / sizeof kR3Layouts[0]) && !ok; i++) { g_r3L = kR3Layouts[i]; ok = R3LayoutMatches(); }
+    for (int k = 0; k < 6; k++) g_r3ProjFn[k] = g_r3L.projFn[k];
+    if (!ok) { Log("RE3: Classic REbirth build not recognised (RE3 support needs Classic REbirth 1.0.1, 1.0.2 or 1.0.3) - mod inactive"); return; }
     g_r3ZDiv = *(float*)R3Cr(R3_ZDIV_OFF);
     g_r3JointPath = GetPrivateProfileIntA("REuncap", "RE3JointPath", 1, g_iniPath);
     g_r3StateSnap = (BYTE*)malloc(R3_STATE_HI - R3_STATE_LO);
@@ -826,6 +1038,11 @@ static void Re3InitInterp() {
     }
     PatchCall(R3Cr(R3_TICK_CALL), (void*)R3TickPoll);
     { int nfx = R3InstallFx(); Log("RE3 2D packet handlers hooked: %d", nfx); }
+    AddVectoredExceptionHandler(1, R3Veh);
+    if (R3CheckCall(R3_WALK_CALL_A, R3_WALK_FN) && R3CheckCall(R3_WALK_CALL_B, R3_WALK_FN)) {
+        PatchCall(R3Cr(R3_WALK_CALL_A), (void*)R3WalkHook); PatchCall(R3Cr(R3_WALK_CALL_B), (void*)R3WalkHook);
+        Log("RE3 list walker replaced (2 call sites)");
+    } else Log("RE3 list walker call sites not found - not replaced");
     g_r3StatT = NowMs();
-    Log("RE3 interpolation active (CR 1.0.3, z divisor %.1f, FpsCap %d)", g_r3ZDiv, g_fpsCap);
+    Log("RE3 interpolation active (CR %s, z divisor %.1f, FpsCap %d)", g_r3L.name, g_r3ZDiv, g_fpsCap);
 }

@@ -461,22 +461,45 @@ static void R2Pace(double P, RenderAtFn renderAt) {
 #define R2_CR_TEXT_CODE     0x00072CD9   // in CR: mov esi,[CR+0x4369e4]; xor edi,edi; mov eax,[esi+0x6ca0]
 #define R2_CR_TEXT_PTR_OFF  0x004369E4
 static char** g_r2CrTextList;
+// Older Classic REbirth builds (1.0.9, 1.0.8 ...) have the same code at another offset, so if the 1.0.9.1
+// offset doesn't match, CR's image is searched for the instruction pattern (exactly one match required).
+static int R2TextCodeAt(BYTE* code, BYTE* base, DWORD size) {
+    static const BYTE kTail[8] = { 0x33, 0xFF, 0x8B, 0x86, 0xA0, 0x6C, 0x00, 0x00 };
+    if (code[0] != 0x8B || code[1] != 0x35 || memcmp(code + 6, kTail, 8)) return 0;
+    DWORD imm = *(DWORD*)(code + 2);
+    return imm >= (DWORD)base && imm < (DWORD)base + size;
+}
 static void R2FindCrTextList() {
     BYTE* j = (BYTE*)R2_CR_PATCHED_JMP;
-    if (j[0] != 0xE9) return;
+    if (j[0] != 0xE9) { Log("RE2: Classic REbirth text list not found (no CR jump) - save screen text may flicker"); return; }
     BYTE* target = j + 5 + *(int*)(j + 1);
     MEMORY_BASIC_INFORMATION mbi;
     if (!VirtualQuery(target, &mbi, sizeof mbi)) return;
     BYTE* base = (BYTE*)mbi.AllocationBase;
-    BYTE* code = base + R2_CR_TEXT_CODE;
-    static const BYTE kHead[2] = { 0x8B, 0x35 };
-    static const BYTE kTail[8] = { 0x33, 0xFF, 0x8B, 0x86, 0xA0, 0x6C, 0x00, 0x00 };
     __try {
-        if (memcmp(code, kHead, 2) || memcmp(code + 6, kTail, 8)) return;
-        DWORD imm = *(DWORD*)(code + 2);
-        if (imm - (DWORD)base != R2_CR_TEXT_PTR_OFF) return;
-        g_r2CrTextList = (char**)imm;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { g_r2CrTextList = 0; }
+        DWORD size = 0;
+        IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+        if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
+            IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+            if (nt->Signature == IMAGE_NT_SIGNATURE) size = nt->OptionalHeader.SizeOfImage;
+        }
+        if (!size) { Log("RE2: Classic REbirth image size unknown - save screen text may flicker"); return; }
+        BYTE* code = 0; const char* how = "1.0.9.1 layout";
+        if (R2TextCodeAt(base + R2_CR_TEXT_CODE, base, size) && *(DWORD*)(base + R2_CR_TEXT_CODE + 2) - (DWORD)base == R2_CR_TEXT_PTR_OFF)
+            code = base + R2_CR_TEXT_CODE;
+        else {
+            int n = 0; how = "pattern search";
+            for (DWORD o = 0x1000; o + 14 < size; o++) {
+                MEMORY_BASIC_INFORMATION r;   // skip pages that can't be read
+                if ((o & 0xFFF) == 0 && (!VirtualQuery(base + o, &r, sizeof r) || r.State != MEM_COMMIT || (r.Protect & (PAGE_NOACCESS | PAGE_GUARD)))) { o += 0xFFF; continue; }
+                if (base[o] != 0x8B) continue;
+                if (R2TextCodeAt(base + o, base, size)) { if (!n) code = base + o; n++; }
+            }
+            if (n != 1) { Log("RE2: Classic REbirth text list not found (%d pattern matches) - save screen text may flicker", n); return; }
+        }
+        g_r2CrTextList = *(char***)(code + 2);
+        Log("RE2: Classic REbirth text list at CR+%06X (%s)", (DWORD)g_r2CrTextList - (DWORD)base, how);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { g_r2CrTextList = 0; Log("RE2: Classic REbirth text list lookup failed"); }
 }
 static int R2CrTextShown() {
     if (!g_r2CrTextList || !*g_r2CrTextList) return 0;
@@ -512,9 +535,7 @@ static void R2RenderAtCU(float t) {
 static double g_r2RealStart;
 static int __fastcall R2Clear_Hook(void* marni, void* edx) {
     static int keyWas;
-    int key = (GetAsyncKeyState(g_hotkey) & 0x8000) != 0;
-    if (key && !keyWas) { g_enabled = !g_enabled; Log("toggled: %s", g_enabled ? "ON" : "OFF"); }
-    keyWas = key;
+    PollHotkey(&keyWas);
 
     DWORD cut = *(DWORD*)R2_STAGE_ROOM ^ ((DWORD)*(WORD*)(R2_STAGE_ROOM + 4) * 0x9E3779B1u);
     if (cut != g_r2LastCut) {
