@@ -22,8 +22,9 @@ ENTRIES = [
         "with numpad + as a second key; 123 = F12).",
         "  Shift + key = switch REuncap on and off",
         "  key alone   = change the frame rate cap while playing: 30, 60, 90, 120, monitor refresh,",
-        "                uncapped, then 30 again (this lasts until the game is closed; FpsCap above",
-        "                is the frame rate the game starts with)",
+        "                uncapped, then 30 again - plus your own FpsCap if it is another number, e.g. 144",
+        "                (this lasts until the game is closed; FpsCap above is the frame rate the game",
+        "                starts with)",
     ]),
     ("ToggleMessage", "1", [
         "1 = show a message for 4 seconds in the lower right corner of the game window when the hotkey",
@@ -61,6 +62,13 @@ ENTRIES = [
         "      plays from its first image and catches up with the game within ~130 ms (default)",
         "  0 = the new angle's first image is shown twice (one short 30 fps step), which is the vanilla",
         "      game's behaviour but doesn't feel as natural as REuncap's CutCatchUp solution",
+    ]),
+    ("RE2EnhancePanSmooth", "1", [
+        "Resident Evil 2 with RE:Enhance 4.0 only (the current pre-release build). RE:Enhance's 16:9 mode",
+        "pans the picture up and down to follow the player.",
+        "  1 = the pan moves smoothly at your frame rate, like everything else (default)",
+        "  0 = RE:Enhance's own pan (it moves at 60 Hz, which looks less smooth at higher frame rates)",
+        "Without RE:Enhance this setting does nothing.",
     ]),
 ]
 

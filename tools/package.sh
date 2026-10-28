@@ -21,9 +21,11 @@
 #   REuncap-UncappedFPSMod-README.txt        short reminder of where everything is
 #   scripts/reuncap.asi, reuncap.ini         the mod and its settings (reuncap.log is written here too)
 #   scripts/UltimateASILoader-LICENSE.txt
+#   DDrawCompat.ini                          (Resident Evil 2 only) PresentDelay = off for DDrawCompat, which
+#                                            RE:Enhance uses (its default delay let only ~60 frames/s through)
 set -e
 cd "$(dirname "$0")/.."
-VER="${1:-1.3}"
+VER="${1:-1.4}"
 RN=release/REuncap-NONSTEAM
 RS=release/REuncap-STEAM
 rm -rf release/REuncap "$RN" "$RS"
@@ -110,13 +112,31 @@ MLKEEP="Keep Mulderload's own files (its dinput8.dll / dsound.dll and the rest) 
 NOTE113="(Classic REbirth 1.1.3: scripts\\bio1hd.asi is Seamless HD Project's HD loader, which 1.1.3 still needs.)
 "
 
+# Resident Evil 2: DDrawCompat (used by RE:Enhance) holds a frame back until the game has not drawn for 10 ms
+# (PresentDelay = on(10)); with in-between frames every few ms that let only an uneven ~60 frames/s reach the
+# screen. RE:Enhance rewrites DDrawCompat's process ini files at every start, but not this directory one.
+ddrawcompat_ini() {   # $1 = game folder (next to the game's .exe)
+    crlf > "$1/DDrawCompat.ini" <<'EOF'
+# Added by REuncap for Resident Evil 2 with RE:Enhance (or any other setup that uses DDrawCompat).
+# DDrawCompat normally waits until the game has not drawn anything for 10 ms before it shows a frame. With
+# REuncap's extra frames that rarely happens, so only an uneven ~60 frames per second reached the screen.
+# "off" shows every frame right away. Without DDrawCompat this file is simply not used.
+PresentDelay = off
+EOF
+}
+ENHNOTE="RE:Enhance 4.0 users (pre-release RE2 build): PLAY IN WINDOWED MODE for the most stable frame rate,
+and switch RE:Enhance's own 60 FPS off (REuncap pauses while it is on). DDrawCompat.ini next to this file
+is for RE:Enhance - keep it there. Details: \"RE:Enhance 4.0\" in README.md.
+"
+DDC="DDrawCompat.ini can be deleted too (it is only used by DDrawCompat, e.g. with RE:Enhance)."
+
 # Mulderload layout, RE1/RE2: only the scripts folder (the pack's own ASI loader loads it) + a reminder
-ml_scripts() {   # $1 = rebirth folder, $2 = game name
+ml_scripts() {   # $1 = rebirth folder, $2 = game name, $3 = extra uninstall note, $4 = extra where-note
     mkdir -p "$1/scripts"
     cp build/reuncap.asi "$1/scripts/"
     py -3 tools/make_ini.py "$1/scripts/reuncap.ini" --version "$VER"
     reminder "$1/REuncap-UncappedFPSMod-README.txt" "$2" "$MLNOTE(The pack already has an ASI loader that loads everything in the \"scripts\" folder.)
-" "$MLKEEP"
+$4" "$MLKEEP$3"
     py -3 - "$1/REuncap-UncappedFPSMod-README.txt" <<'PYEOF'
 import sys
 p = sys.argv[1]; s = open(p, encoding='utf-8', newline='').read()
@@ -144,7 +164,9 @@ cp README.md "$RN/README.md"; cp CHANGELOG.md "$RN/CHANGELOG.md"
 game_folder "$RN/Resident Evil (Classic Rebirth 1.1.4)" "Resident Evil" 1 "" "$DEL"
 game_folder "$RN/Resident Evil (Classic Rebirth 1.1.3)" "Resident Evil" 113 "$NOTE113" "$DEL113"
 cp third_party/SeamlessHDProject/bio1hd.asi "$RN/Resident Evil (Classic Rebirth 1.1.3)/scripts/"
-game_folder "$RN/Resident Evil 2" "Resident Evil 2" 0 "" "$KEEP2"
+game_folder "$RN/Resident Evil 2" "Resident Evil 2" 0 "$ENHNOTE" "$KEEP2
+$DDC"
+ddrawcompat_ini "$RN/Resident Evil 2"
 game_folder "$RN/Resident Evil 3" "Resident Evil 3" 1 "" "$DEL"
 crlf > "$RN/STEAM-USERS-README.txt" <<EOF
 REuncap v$VER - this is the package for the ORIGINAL (non-Steam) PC versions.
@@ -161,10 +183,14 @@ EOF
 # ---- Steam package (one combined layout) ----------------------------------------------------------
 cp README.md "$RS/README.md"; cp CHANGELOG.md "$RS/CHANGELOG.md"
 game_folder "$RS/Resident Evil/japanese"   "Resident Evil"   1 "$JPNOTE" "$DEL"
-game_folder "$RS/Resident Evil 2/japanese" "Resident Evil 2" 0 "$JPNOTE" "$DEL"
+game_folder "$RS/Resident Evil 2/japanese" "Resident Evil 2" 0 "$JPNOTE$ENHNOTE" "$DEL
+$DDC"
+ddrawcompat_ini "$RS/Resident Evil 2/japanese"
 game_folder "$RS/Resident Evil 3/japanese" "Resident Evil 3" 1 "$JPNOTE" "$DEL"
 ml_scripts  "$RS/Resident Evil/rebirth"    "Resident Evil"
-ml_scripts  "$RS/Resident Evil 2/rebirth"  "Resident Evil 2"
+ml_scripts  "$RS/Resident Evil 2/rebirth"  "Resident Evil 2" "
+$DDC" "$ENHNOTE"
+ddrawcompat_ini "$RS/Resident Evil 2/rebirth"
 game_folder "$RS/Resident Evil 3/rebirth"  "Resident Evil 3" 1 "$MLNOTE" "$DEL"
 mulderconfig "$RS/Resident Evil/MulderConfig.save.json"   "Resident Evil (Steam)"
 mulderconfig "$RS/Resident Evil 2/MulderConfig.save.json" "Resident Evil 2 (Steam)"

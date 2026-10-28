@@ -12,12 +12,18 @@ the current one:
 - characters, enemies and all other 3D models
 - shadows and blood pools
 - effects: shell casings, blood, muzzle flashes, sparks
+- door transitions (the door opening animation between rooms) and room objects such as pushable
+  statues and item boxes
 
 One file, `reuncap.asi`, works for all three games; it detects which game it is running in.
 Menus, inventory and file screens are left as they are. Download it from the [Releases](https://github.com/NobodyCatchMe-AZ92/REuncap/releases) page.
 
 **Please help me to improve the mod by [Reporting Problems](#Reporting-problems) either here on
 GitHub, in the moddb comments, or on the Reddit thread.**
+
+**New in v1.4: Resident Evil 2 works together with RE:Enhance 4.0** (the currently available
+pre-release build) - see [RE:Enhance 4.0](#reenhance-40-resident-evil-2). **RE:Enhance 4.0 users:
+play in windowed mode for the most stable frame rate.**
 
 ## Requirements
 | Game | Executable | Classic REbirth |
@@ -45,8 +51,8 @@ below.
 
 ## Install
 There are two downloads - pick the one for your version of the games from the [Releases](https://github.com/NobodyCatchMe-AZ92/REuncap/releases) page:
-- **`REuncap-v1.3-NONSTEAM.zip`** - the original PC releases (instructions below).
-- **`REuncap-v1.3-STEAM.zip`** - the Steam re-releases (see [Steam versions](#steam-versions)).
+- **`REuncap-v1.4-NONSTEAM.zip`** - the original PC releases (instructions below).
+- **`REuncap-v1.4-STEAM.zip`** - the Steam re-releases (see [Steam versions](#steam-versions)).
 
 1. Open the folder for your game in the download (`Resident Evil (Classic Rebirth 1.1.4)`,
    `Resident Evil (Classic Rebirth 1.1.3)`, `Resident Evil 2` or `Resident Evil 3`). For Resident
@@ -79,6 +85,7 @@ What gets installed:
 | `global.ini` | the loader's settings |
 | `REuncap-UncappedFPSMod-README.txt` | a short reminder of where everything is |
 | `scripts\bio1hd.asi` | only in the Resident Evil Classic REbirth 1.1.3 folder: a HD loader, which 1.1.3 still needs |
+| `DDrawCompat.ini` | only in Resident Evil 2: a setting for DDrawCompat, which RE:Enhance 4.0 uses (see [RE:Enhance 4.0](#reenhance-40-resident-evil-2)); without DDrawCompat it is simply not used |
 
 **About `global.ini`:** in Resident Evil and Resident Evil 3 it tells the loader to load only from
 the `scripts` folder. Older Seamless HD Project installs leave `bio1hd.asi` / `bio3hd.asi` next to
@@ -91,14 +98,14 @@ In Resident Evil 2 the setting is off, because Seamless HD Project's `bio2hd.asi
 To uninstall, delete `scripts\reuncap.asi`, `scripts\reuncap.ini`, `scripts\reuncap.log` and
 `REuncap-UncappedFPSMod-README.txt`. In Resident Evil and Resident Evil 3 also delete `dsound.dll` and
 `global.ini` (unless another mod needs them). In Resident Evil 2 keep `dsound.dll` if you use
-Seamless HD Project - it needs it too.
+Seamless HD Project - it needs it too; `DDrawCompat.ini` can be deleted.
 
 **Resident Evil with Classic REbirth 1.1.3**: use the `Resident Evil (Classic Rebirth 1.1.3)` folder
 and install it like the others. The `bio1hd.asi` next to `Biohazard.exe` is no longer loaded (the
 copy in `scripts` is) - it can stay there or be deleted.
 
 ## Steam versions
-Use **`REuncap-v1.3-STEAM.zip`**. Classic REbirth has to be set up for the Steam versions first, in one
+Use **`REuncap-v1.4-STEAM.zip`**. Classic REbirth has to be set up for the Steam versions first, in one
 of two ways - the package works with both:
 - **Mulderload's Steam Enhancement Pack** (mulderland.com, the most popular installer): the game runs
   from the game's `rebirth` folder.
@@ -131,6 +138,32 @@ HD textures stay on). To apply it, run `MulderConfig.exe` in the game's Steam fo
 According to Mulderload's readme, the Steam Overlay needs dgVoodoo2 in Classic REbirth (Steam play time
 tracking works without it).
 
+## RE:Enhance 4.0 (Resident Evil 2)
+> **Recommended for RE:Enhance 4.0 users: play in windowed mode.** In windowed mode REuncap runs at a
+> steady frame rate (e.g. a stable 120). In RE:Enhance's fullscreen mode the frame rate is less stable:
+> the way RE:Enhance shows the picture in fullscreen sometimes holds a frame back, and REuncap can only
+> work around that, not remove it. If you prefer fullscreen, lowering RE:Enhance's antialiasing helps.
+
+From v1.4, REuncap works together with **RE:Enhance 4.0 for Resident Evil 2**. This compatibility is
+based specifically on the **currently available pre-release RE2 version of RE:Enhance 4.0**. Compatibility
+with further updates of RE:Enhance 4.0 will be ensured as they come.
+
+- **RE:Enhance's own 60 FPS** (its "Gameplay 60 FPS" option) and REuncap can't run at the same time.
+  Switch RE:Enhance's 60 FPS off to use REuncap. You can do this in RE:Enhance's in-game menu while
+  playing: REuncap pauses automatically while RE:Enhance's 60 FPS is on and resumes as soon as it is
+  switched off, with a short message each time.
+- **16:9 mode (pan and scan):** RE:Enhance pans the picture up and down to follow the player. REuncap
+  moves that pan smoothly at your frame rate too (`RE2EnhancePanSmooth`, see below).
+- **`DDrawCompat.ini`** (included in the Resident Evil 2 folder): RE:Enhance shows the game through
+  DDrawCompat, which by default holds every frame back until the game has stopped drawing for 10 ms.
+  With REuncap's extra frames that let only an uneven ~60 frames per second reach the screen. The
+  included `DDrawCompat.ini` (`PresentDelay = off`) shows every frame right away. Keep it next to the
+  game's `.exe`.
+- RE:Enhance's other features (facial animation, damage and ragdolls, dynamic shadows, floor
+  reflections and water, effects, smaller text, doors and cutscenes) work together with REuncap.
+- **Resident Evil and Resident Evil 3:** RE:Enhance 4.0 versions of these games are not out yet. Until
+  REuncap supports them, it stays inactive (with a short message) if RE:Enhance's 60 FPS is on.
+
 ## Settings (`reuncap.ini`)
 Each setting is explained in the ini itself. The main ones:
 - **FpsCap**: `-1` = your monitor's refresh rate (default), `0` = uncapped, or any number such as
@@ -138,8 +171,8 @@ Each setting is explained in the ini itself. The main ones:
   gives the most even pacing (e.g. 190 on a 200 Hz monitor).
 - **ToggleKey**: the in-game hotkey, `=` by default (numpad `+` works too; `123` = F12). Shift + key
   switches the mod on and off; the key alone steps the frame rate cap through 30, 60, 90, 120, your
-  monitor's refresh rate and uncapped while playing (until the game is closed - `FpsCap` is what the
-  game starts with).
+  monitor's refresh rate and uncapped while playing - plus your own `FpsCap` if it is another number,
+  e.g. 144 (until the game is closed - `FpsCap` is what the game starts with).
 - **ToggleMessage**: `1` (default) shows a short message in the lower right corner when the hotkey is
   pressed (e.g. "FPS set to 60 with hotkey."); `0` turns it off.
 - **RE2Pacing** (Resident Evil 2 only): `0` runs at your FpsCap exactly; `1` rounds it down to a
@@ -151,9 +184,13 @@ Each setting is explained in the ini itself. The main ones:
 - **RE2CutCatchUp** (Resident Evil 2 only, default `1`): the new camera angle starts smoothly - the
   old angle stays up a moment longer, then the new one plays from its first image and catches up with
   the game within ~130 ms. `0` shows the new angle's first image twice (a short 30 fps step).
+- **RE2EnhancePanSmooth** (Resident Evil 2 with RE:Enhance 4.0 only, default `1`): RE:Enhance's 16:9
+  pan moves smoothly at your frame rate. `0` keeps RE:Enhance's own pan, which moves at 60 Hz.
 
-The first line of `reuncap.ini` shows which REuncap version it came with (from v1.2 on). What changed
-in each version is listed in `CHANGELOG.md`.
+The first line of `reuncap.ini` shows which REuncap version it came with (from v1.2 on). If your
+`reuncap.ini` is from an older version than the settings of the REuncap you are running, a short message
+in the game says so - it keeps working, but copy the new `reuncap.ini` over it to get the new settings
+and their descriptions. What changed in each version is listed in `CHANGELOG.md`.
 
 ## Good to know
 - **Game speed never depends on the frame rate.** An in-between frame is only drawn if it can be
@@ -195,9 +232,10 @@ Please open an issue on GitHub and include:
 1. **`reuncap.log`** from a session where the problem happened. Before playing, set `DebugLog=1` in
    `scripts\reuncap.ini` so the log records frame rate, pacing and tick-rate statistics. The log is
    `scripts\reuncap.log` in the game's folder (on Steam: in the `rebirth` folder with Mulderload's pack,
-   in the `japanese` folder with Classic REbirth's own setup).
+   in the `japanese` folder with Classic REbirth's own setup). The logs of the four sessions before
+   are kept as `reuncap.1.log` (the previous one) to `reuncap.4.log`.
 2. Which game, which version (Steam or not), which Classic REbirth version and which other mods you
-   use (e.g. Seamless HD Project, BioRand).
+   use (e.g. Seamless HD Project, BioRand, RE:Enhance).
 3. What you saw, where it happens, and whether it goes away when you press **Shift + `=`** (mod off).
    A screenshot or short clip helps a lot.
 
@@ -225,6 +263,9 @@ bash tools/package.sh      # -> release/REuncap-NONSTEAM/ and release/REuncap-ST
 - **TeamX Resident Evil HD mod** team -  Their `bio1hd.asi` is included in the Resident Evil Classic
   REbirth 1.1.3 folder.
 - **Mulderload's Steam Enhancement Pack** (mulderland.com) - the Steam package is laid out for it.
+- **RE:Enhance** - REuncap was made to work together with RE:Enhance 4.0 for Resident Evil 2.
+- **DDrawCompat** by narzoul (github.com/narzoul/DDrawCompat) - used by RE:Enhance; REuncap includes a
+  `DDrawCompat.ini` setting file for it (no DDrawCompat files are included).
 - **Ultimate ASI Loader** by ThirteenAG (github.com/ThirteenAG/Ultimate-ASI-Loader, MIT licence) -
   bundled as `dsound.dll`; it loads REuncap in all three games. Its licence is included as
   `scripts\UltimateASILoader-LICENSE.txt`.

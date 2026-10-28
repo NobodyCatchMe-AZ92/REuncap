@@ -875,6 +875,7 @@ static void __cdecl R3TickPoll() {
     ((void(*)())R3Cr(R3_TICK_FN))();
 }
 
+static int g_r3V1Ticks, g_r3V1With3D, g_r3V1Parts, g_r3V1Pk, g_r3V1Fx;
 static void __cdecl R3Render() {
     static int keyWas;
     PollHotkey(&keyWas);
@@ -901,12 +902,20 @@ static void __cdecl R3Render() {
     // A camera cut shows up first as a pending background change (CR's render compares the game's cut
     // number with the one last drawn, exactly like this) and one tick later as a new camera matrix.
     int bgCut = (!(*(BYTE*)R3_BG_FLAGS & 0x40) && *(WORD*)R3_BG_DRAWN != *(BYTE*)R3_BG_CUT) || *(BYTE*)R3_BG_RELOAD;
-    int cut = bgCut || memcmp(&g_r3CamCur, &g_r3CamPrev, sizeof(R3Mtx)) != 0;
     int vs = *(BYTE*)R3_VSYNC_CNT;
+    // Door transitions run at 60 ticks/s (VSync count 1) and draw the door as ordinary model packets, which the
+    // generic path already matches; menus/title in that mode draw none. Such a tick gets in-between frames, timed
+    // with the 60 Hz tick. The door camera moves every tick, so only a background change counts as a cut there.
+    int door = vs == 1 && g_r3PkN > 0 && g_r3PartN == 0;
+    int cut = bgCut || (!door && memcmp(&g_r3CamCur, &g_r3CamPrev, sizeof(R3Mtx)) != 0);
     if (g_r3Suspend > 0) g_r3Suspend--;
     int stallSkip = g_r3AfterStall; g_r3AfterStall = 0; g_r3StallSkips += stallSkip;
-    g_r3Active = g_enabled && vs == 2 && g_r3HavePrev && !cut && !g_r3Overflow && (g_r3PartN > 0 || g_r3PkN > 0) && !g_r3Suspend && !stallSkip;
-    if (!g_enabled) g_r3Why[0]++; else if (vs != 2) g_r3Why[1]++; else if (g_r3PartN <= 0 && g_r3PkN <= 0) g_r3Why[2]++;
+    g_r3Active = g_enabled && (vs == 2 || door) && g_r3HavePrev && !cut && !g_r3Overflow && (g_r3PartN > 0 || g_r3PkN > 0) && !g_r3Suspend && !stallSkip;
+    if (g_debug >= 2 && vs != 2) {   // census of 60 Hz ticks (doors, menus): what 3D/2D data they draw
+        g_r3V1Ticks++; g_r3V1Parts += g_r3PartN; g_r3V1Pk += g_r3PkN; g_r3V1Fx += g_r3FxPrevN;
+        if (g_r3PartN || g_r3PkN) g_r3V1With3D++;
+    }
+    if (!g_enabled) g_r3Why[0]++; else if (vs != 2 && !door) g_r3Why[1]++; else if (g_r3PartN <= 0 && g_r3PkN <= 0) g_r3Why[2]++;
     else if (!g_r3HavePrev) g_r3Why[3]++; else if (cut) g_r3Why[4]++; else if (g_r3Overflow) g_r3Why[5]++;
     if (g_r3Active && !R3LinkSnap()) { g_r3Active = 0; g_r3LinkBad++; }   // a list is broken: no extras
     if (g_r3Active) {
@@ -917,7 +926,7 @@ static void __cdecl R3Render() {
         // one slow extra frame (e.g. first frame after a room load) must not block extra frames for good:
         // the shared pacer only lowers its cost peak when it draws, so cap it and let it decay per tick here
         if (g_frameCostPeak > 8.0) g_frameCostPeak = 8.0;
-        PaceExtraFrames(g_tickPeriod, R3RenderAt);
+        PaceExtraFrames(door ? g_tickPeriod * 0.5 : g_tickPeriod, R3RenderAt);
         g_frameCostPeak *= 0.97;
         if (gte) memcpy((void*)gte, g_r3GteSnap, sizeof g_r3GteSnap);
     }
@@ -997,6 +1006,11 @@ static void __cdecl R3Render() {
             g_r3CntA = g_r3CntB = g_r3CntProj = 0; g_r3ObjAN = g_r3ObjBN = 0;
         }
         Log("    inactive ticks: off %d  vsync %d  noparts %d  noprev %d  camera %d  overflow %d", g_r3Why[0], g_r3Why[1], g_r3Why[2], g_r3Why[3], g_r3Why[4], g_r3Why[5]);
+        if (g_debug >= 2 && g_r3V1Ticks) {
+            Log("    60 Hz ticks: %d, with 3D data %d; per tick: joint parts %.1f, model packets %.1f, 2D packets (prev render) %.1f",
+                g_r3V1Ticks, g_r3V1With3D, (double)g_r3V1Parts / g_r3V1Ticks, (double)g_r3V1Pk / g_r3V1Ticks, (double)g_r3V1Fx / g_r3V1Ticks);
+            g_r3V1Ticks = g_r3V1With3D = g_r3V1Parts = g_r3V1Pk = g_r3V1Fx = 0;
+        }
         memset(g_r3Why, 0, sizeof g_r3Why);
         g_frames = 0; g_r3TickN = 0; g_r3Extras = 0; g_r3Matched = g_r3Unmatched = 0; g_ticks = 0; g_r3StatT = now;
         UpdateRefresh();

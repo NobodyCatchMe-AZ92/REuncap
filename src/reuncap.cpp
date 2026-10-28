@@ -18,7 +18,10 @@
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "gdi32.lib")
 
-#define REUNCAP_VERSION "1.3"
+#define REUNCAP_VERSION "1.4"
+// The last version that changed reuncap.ini (new settings / descriptions). An ini older than this gets a
+// "use the new reuncap.ini" note; bump it together with REUNCAP_VERSION whenever make_ini.py changes.
+#define REUNCAP_INI_VERSION "1.4"
 
 // ---- Biohazard.exe ---------------------------------------------------------------------------
 #define A_MARNI_PTR      0x004CFD38  // CMarni* (thiscall renderer object)
@@ -65,6 +68,7 @@ static int   g_hotkey = VK_OEM_PLUS;   // the =/+ key (same key code on every ke
 static int   g_debug = 0;
 static int   g_bench = 0;
 static int   g_fpsCap = -1;
+static int   g_iniFpsCap = -1;   // FpsCap from reuncap.ini (joins the hotkey cycle if it is not one of its steps)
 static int   g_toggleMsg = 1;   // show a message when the hotkey is pressed (on/off, frame rate)
 static int   g_simLoadMs = 0;   // test only: extra ms of work per in-between frame (simulates slow hardware)   // -1 = monitor refresh, 0 = uncapped, >0 = fps     // >0: render this many extra frames per tick back-to-back and log timings
 static float g_maxMove = 2500.0f;   // view-space units per tick beyond which we treat it as a cut
@@ -86,7 +90,7 @@ static int HotkeyDown() {
 // game renders (DirectDraw / D3D9 / D3D11 / dgVoodoo); it is not visible in exclusive fullscreen.
 #define WM_REUNCAP_SHOW (WM_APP + 1)
 static HWND g_toastWnd; static HANDLE g_toastReady;
-static char g_toastText[128]; static HWND g_toastGame;
+static char g_toastText[160]; static HWND g_toastGame; static UINT g_toastMs = 4000;
 static void ToastPaint() {
     RECT cr; if (!g_toastGame || !GetClientRect(g_toastGame, &cr)) return;
     POINT org = { 0, 0 }; ClientToScreen(g_toastGame, &org);
@@ -95,7 +99,10 @@ static void ToastPaint() {
     HDC sdc = GetDC(0), dc = CreateCompatibleDC(sdc);
     HFONT font = CreateFontA(-fh, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI");
     HGDIOBJ of = SelectObject(dc, font);
-    SIZE ts; GetTextExtentPoint32A(dc, g_toastText, (int)strlen(g_toastText), &ts);
+    // long messages wrap onto several lines, at most 90% of the game window wide
+    RECT tr = { 0, 0, gw * 9 / 10, 0 };
+    DrawTextA(dc, g_toastText, -1, &tr, DT_CALCRECT | DT_WORDBREAK | DT_RIGHT | DT_NOPREFIX);
+    SIZE ts = { tr.right - tr.left, tr.bottom - tr.top };
     int pad = fh / 2, w = ts.cx + pad * 2, h = ts.cy + pad;
     BITMAPINFO bi; memset(&bi, 0, sizeof bi);
     bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
@@ -105,7 +112,8 @@ static void ToastPaint() {
     HGDIOBJ ob = SelectObject(dc, bmp);
     memset(px, 0, (size_t)w * h * 4);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
-    TextOutA(dc, pad, pad / 2, g_toastText, (int)strlen(g_toastText));
+    RECT dr = { pad, pad / 2, pad + ts.cx, pad / 2 + ts.cy };
+    DrawTextA(dc, g_toastText, -1, &dr, DT_WORDBREAK | DT_RIGHT | DT_NOPREFIX);
     GdiFlush();
     // GDI wrote white text on black without alpha: coverage -> premultiplied white text, no background
     for (int i = 0; i < w * h; i++) {
@@ -122,7 +130,7 @@ static void ToastPaint() {
     DeleteDC(dc); ReleaseDC(0, sdc);
 }
 static LRESULT CALLBACK ToastProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
-    if (m == WM_REUNCAP_SHOW) { ToastPaint(); SetTimer(h, 1, 4000, 0); return 0; }
+    if (m == WM_REUNCAP_SHOW) { ToastPaint(); SetTimer(h, 1, g_toastMs, 0); return 0; }
     if (m == WM_TIMER) { KillTimer(h, 1); ShowWindow(h, SW_HIDE); return 0; }
     if (m == WM_NCHITTEST) return HTTRANSPARENT;
     if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
@@ -139,7 +147,7 @@ static DWORD WINAPI ToastThread(LPVOID) {
     while (GetMessageA(&msg, 0, 0, 0) > 0) DispatchMessageA(&msg);
     return 0;
 }
-static void ShowMessage(const char* text) {
+static void ShowMessage(const char* text, UINT ms = 4000) {
     if (!g_toggleMsg) return;
     if (!g_toastReady) {
         g_toastReady = CreateEventA(0, TRUE, FALSE, 0);
@@ -147,7 +155,7 @@ static void ShowMessage(const char* text) {
         if (th) { WaitForSingleObject(g_toastReady, 1000); CloseHandle(th); }
     }
     if (!g_toastWnd) return;
-    strcpy_s(g_toastText, text);
+    strcpy_s(g_toastText, text); g_toastMs = ms;
     g_toastGame = GetForegroundWindow();   // HotkeyDown() only fires while the game's window is in front
     PostMessageA(g_toastWnd, WM_REUNCAP_SHOW, 0, 0);
 }
@@ -599,6 +607,22 @@ static double PaceSlot(double cont, double anchor, double f, int locked, int* sl
     g_paceNudged++;
     return cont + err;
 }
+// With RE:Enhance (RE2), DDrawCompat sometimes stalls a present for up to a whole frame in fullscreen. With the
+// usual peak (jumps to any spike, decays slowly) one stall shrank the frame budget for the next half second, so
+// ticks lost an in-between frame. There a cost peak is the 3rd largest cost of a recent window instead: single
+// stalls are ignored, repeated ones still count. Other setups keep the usual peak.
+struct PeakWin { double v[64]; int n, i, cap; };
+static int g_robustPeaks;
+static PeakWin g_realWin = { {0}, 0, 0, 30 }, g_extraWin = { {0}, 0, 0, 60 };   // ~1 s of real / extra frames
+static double PeakWinAdd(PeakWin& w, double c) {
+    w.v[w.i] = c; w.i = (w.i + 1) % w.cap; if (w.n < w.cap) w.n++;
+    double a = 0, b = 0, d = 0;
+    for (int k = 0; k < w.n; k++) {
+        double x = w.v[k];
+        if (x > a) { d = b; b = a; a = x; } else if (x > b) { d = b; b = x; } else if (x > d) d = x;
+    }
+    return w.n >= 3 ? d : a;
+}
 static void PaceExtraFrames(double P, RenderAtFn renderAt) {
     double f = FrameIntervalMs();
     double fe = f > 0 ? f : g_presentCost;            // uncapped: frame time = what present allows
@@ -625,7 +649,7 @@ static void PaceExtraFrames(double P, RenderAtFn renderAt) {
         renderAt((float)t);
         if (g_simLoadMs > 0) WaitUntil(a + g_simLoadMs);
         double c = NowMs() - a;
-        g_frameCostPeak = c > g_frameCostPeak ? c : g_frameCostPeak * 0.98 + c * 0.02;
+        g_frameCostPeak = g_robustPeaks ? PeakWinAdd(g_extraWin, c) : c > g_frameCostPeak ? c : g_frameCostPeak * 0.98 + c * 0.02;
         g_presentCost = g_presentCost * 0.9 + c * 0.1;
         NotePresent(a);
         g_frames++;
@@ -640,20 +664,99 @@ static void Re1RenderAt(float t) { RenderIntermediate(g_re1Marni, t); }
 
 // The hotkey (ToggleKey, = by default): Shift + key switches REuncap on and off; the key alone steps the frame
 // rate cap through 30 / 60 / 90 / 120 / monitor refresh / uncapped (live only - reuncap.ini is not changed).
+static double g_refreshT;
+static char g_startMsg[160]; static double g_startT;   // shown once the game window is up (old reuncap.ini warning)
+
+// RE:Enhance (HD/feature mod, bio2hd.asi + RE_ENHANCE.ini next to the exe in RE2; RE1/RE3 versions announced) has
+// its own 60 FPS interpolation. Two interpolators would fight, so REuncap never runs while its Gameplay60FPS is on.
+// RE1/RE3: nothing is installed then (not supported yet). RE2: REuncap chains onto RE:Enhance's hooks and follows
+// the setting while the game runs - RE:Enhance's in-game menu saves RE_ENHANCE.ini right away, so the file is
+// checked once a second: switched on -> REuncap pauses, switched off -> it resumes (unless the player had turned
+// it off with the hotkey).
+static char g_enhIni[MAX_PATH];
+static int g_enh60 = -1, g_enhWatch, g_enhPaused;
+static FILETIME g_enhTime; static double g_enhT;
+static int EnhanceIniPath() {
+    GetModuleFileNameA(0, g_enhIni, MAX_PATH);
+    char* sl = strrchr(g_enhIni, '\\'); if (!sl) { g_enhIni[0] = 0; return 0; }
+    strcpy_s(sl + 1, MAX_PATH - (sl + 1 - g_enhIni), "RE_ENHANCE.ini");
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExA(g_enhIni, GetFileExInfoStandard, &fa)) { g_enhIni[0] = 0; return 0; }
+    g_enhTime = fa.ftLastWriteTime;
+    return 1;
+}
+// Gameplay60FPS from RE_ENHANCE.ini, -1 if the file can't be read or has no such line (e.g. caught mid-write).
+// Parsed by hand: inside the game, GetPrivateProfileInt returned 0 for a file that said Gameplay60FPS=1 (RE:Enhance
+// hooks a lot of the process).
+static int EnhanceRead60() {
+    int v = -1; char line[256]; FILE* f = 0;
+    if (fopen_s(&f, g_enhIni, "r") != 0 || !f) return -1;
+    while (fgets(line, sizeof line, f)) {
+        char* p = line; while (*p == ' ' || *p == '	') p++;
+        if (_strnicmp(p, "Gameplay60FPS", 13)) continue;
+        p += 13; while (*p == ' ' || *p == '	') p++;
+        if (*p == '=') v = atoi(p + 1) ? 1 : 0;
+    }
+    fclose(f);
+    return v;
+}
+static void EnhancePoll(double now) {
+    if (!g_enhWatch || now - g_enhT < 1000.0) return;
+    g_enhT = now;
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExA(g_enhIni, GetFileExInfoStandard, &fa) || !CompareFileTime(&fa.ftLastWriteTime, &g_enhTime)) return;
+    int v = EnhanceRead60();
+    if (v < 0) return;                       // not readable yet - try again next second
+    g_enhTime = fa.ftLastWriteTime;
+    if (v == g_enh60) return;
+    g_enh60 = v;
+    Log("RE:Enhance's Gameplay60FPS changed to %d in game", v);
+    if (v) {
+        if (g_enabled) { g_enabled = 0; g_enhPaused = 1; }
+        ShowMessage("RE:Enhance's 60 FPS was switched on - REuncap paused.", 6000);
+    } else if (g_enhPaused) {
+        g_enabled = 1; g_enhPaused = 0;
+        ShowMessage("RE:Enhance's 60 FPS was switched off - REuncap is active again.", 6000);
+    } else {
+        ShowMessage("RE:Enhance's 60 FPS was switched off - REuncap stays disabled (use its hotkey to enable it).", 6000);
+    }
+}
 static void PollHotkey(int* keyWas) {
+    // Re-read the monitor's refresh rate every 2 s (FpsCap -1), whatever DebugLog is: RE2/RE3 used to do this only
+    // in the DebugLog statistics, so with DebugLog=0 they stayed at the 60 Hz default.
+    double now = NowMs();
+    if (now - g_refreshT >= 2000.0) { g_refreshT = now; UpdateRefresh(); }
+    EnhancePoll(now);
+    if (g_startMsg[0] && !g_startT) g_startT = now;   // first frame
+    if (g_startMsg[0] && now - g_startT > 3000.0) {
+        DWORD pid = 0; HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid);
+        if (pid == GetCurrentProcessId()) { ShowMessage(g_startMsg, 8000); g_startMsg[0] = 0; }
+    }
     int key = HotkeyDown();
     if (key && !*keyWas) {
-        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
-            g_enabled = !g_enabled;
+        if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) && g_enh60 == 1 && !g_enabled) {
+            Log("hotkey: not enabled - RE:Enhance's 60 FPS is on");
+            ShowMessage("RE:Enhance's 60 FPS is on - switch it off in RE:Enhance's menu to use REuncap.", 6000);
+        } else if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+            g_enabled = !g_enabled; g_enhPaused = 0;
             Log("toggled: %s", g_enabled ? "ON" : "OFF");
             ShowMessage(g_enabled ? "Enabled REuncap with hotkey." : "Disabled REuncap with hotkey.");
         } else {
-            static const int kCaps[] = { 30, 60, 90, 120, -1, 0 };
-            const int n = sizeof kCaps / sizeof kCaps[0];
-            int i = 0; while (i < n && kCaps[i] != g_fpsCap) i++;
-            g_fpsCap = i < n ? kCaps[(i + 1) % n] : kCaps[0];
+            // 30 / 60 / 90 / 120 / monitor / uncapped, plus the ini's own FpsCap (in numeric order) if it isn't one of them
+            int caps[8], n = 0;
+            static const int kSteps[] = { 30, 60, 90, 120 };
+            int iniExtra = g_iniFpsCap > 0 && g_iniFpsCap != 30 && g_iniFpsCap != 60 && g_iniFpsCap != 90 && g_iniFpsCap != 120;
+            for (int k = 0; k < 4; k++) {
+                if (iniExtra && g_iniFpsCap < kSteps[k] && (k == 0 || g_iniFpsCap > kSteps[k - 1])) caps[n++] = g_iniFpsCap;
+                caps[n++] = kSteps[k];
+            }
+            if (iniExtra && g_iniFpsCap > 120) caps[n++] = g_iniFpsCap;
+            caps[n++] = -1; caps[n++] = 0;
+            int i = 0; while (i < n && caps[i] != g_fpsCap) i++;
+            g_fpsCap = i < n ? caps[(i + 1) % n] : caps[0];
             char m[128];
-            if (g_fpsCap > 0) sprintf_s(m, "FPS set to %d with hotkey.", g_fpsCap);
+            if (g_fpsCap > 0 && iniExtra && g_fpsCap == g_iniFpsCap) sprintf_s(m, "FPS set to %d (your FpsCap setting) with hotkey.", g_fpsCap);
+            else if (g_fpsCap > 0) sprintf_s(m, "FPS set to %d with hotkey.", g_fpsCap);
             else if (g_fpsCap < 0) { UpdateRefresh(); sprintf_s(m, "FPS set to monitor refresh rate (%d) with hotkey.", g_refresh); }
             else strcpy_s(m, "FPS set to uncapped with hotkey.");
             if (!g_enabled) strcat_s(m, " (REuncap is disabled)");
@@ -664,6 +767,7 @@ static void PollHotkey(int* keyWas) {
     *keyWas = key;
 }
 
+static int g_m0Ticks, g_m0Rec, g_m0Prim, g_m0RecMoved, g_m0PrimMoved;
 static void __cdecl Governor_Hook(void) {
     static int keyWas;
     PollHotkey(&keyWas);
@@ -676,7 +780,10 @@ static void __cdecl Governor_Hook(void) {
     // A_SKIP_SCENE: the game draws nothing (Classic REbirth 1.1.4's cutscene skip sets it and then runs the
     // scene's ticks back to back to fast-forward it). Pacing extra frames there held the fast-forward to
     // real time behind a black screen.
-    int active = g_enabled && inGame && marni && *(int*)A_SCREEN_READY && *(unsigned char*)A_RENDER_READY && !*(int*)A_SKIP_SCENE;
+    // Door transitions run in the 60 Hz tick mode (0) and draw the door model through Transform like any model:
+    // a 60 Hz tick that recorded models gets in-between frames too (timed with the 60 Hz tick).
+    int door = !inGame && *(int*)A_TICK_MODE == 0 && g_curN > 0;
+    int active = g_enabled && (inGame || door) && marni && *(int*)A_SCREEN_READY && *(unsigned char*)A_RENDER_READY && !*(int*)A_SKIP_SCENE;
     if (active && g_bench > 0) {
         static double sum, mx, mn = 1e9, dsum, dmx; static int n, ticks;
         for (int k = 0; k < g_bench; k++) {
@@ -695,7 +802,7 @@ static void __cdecl Governor_Hook(void) {
     }
     if (active) {
         g_re1Marni = marni;
-        PaceExtraFrames(kTickMs, Re1RenderAt);
+        PaceExtraFrames(door ? 1000.0 / 60.0 : kTickMs, Re1RenderAt);
     }
 
     if (g_debug >= 2 && marni) DiagOT(marni);
@@ -712,12 +819,25 @@ real_frame:
     }
     g_frames++;
 
+    // DebugLog >= 2: what is drawn on ticks outside 30 Hz gameplay (doors, menus): records per tick and how many moved
+    if (g_debug >= 2 && !inGame) {
+        static int lastMode = -1; int mode = *(int*)A_TICK_MODE;
+        g_m0Ticks++; g_m0Rec += g_curN; g_m0Prim += g_pcurN;
+        for (int i = 0; i < g_curN; i++) {
+            Rec* p = Find(g_prev, g_prevN, g_cur[i].tmd, g_cur[i].set);
+            if (p && memcmp(p->m, g_cur[i].m, 64)) g_m0RecMoved++;
+        }
+        for (int i = 0; i < g_pcurN; i++) for (int k = 0; k < g_pprevN; k++)
+            if (g_pprev[k].prim == g_pcur[i].prim) { if (memcmp(g_pprev[k].m, g_pcur[i].m, 64)) g_m0PrimMoved++; break; }
+        if (mode != lastMode) { Log("   tick mode %d (outside gameplay), skip_scene %d, stage/room/cut %06X", mode, *(int*)A_SKIP_SCENE, *(DWORD*)A_STAGE_ROOM_CUT & 0xFFFFFF); lastMode = mode; }
+    }
+
     // Rotate records: this tick becomes "previous".
     Rec* t = g_prev; g_prev = g_cur; g_cur = t;
     g_prevN = g_curN; g_curN = 0;
     { SRec* st = g_sprev; g_sprev = g_scur; g_scur = st; g_sprevN = g_scurN; g_scurN = 0; }
     { PRec* pt = g_pprev; g_pprev = g_pcur; g_pcur = pt; g_pprevN = g_pcurN; g_pcurN = 0; }
-    g_prevValid = inGame && !g_overflow;
+    g_prevValid = (inGame || door) && !g_overflow;
     g_overflow = 0;
     if (g_cutHold > 0) g_cutHold--;
 
@@ -738,6 +858,11 @@ real_frame:
                 Log("   DIAG extra frames %d avg t %.3f | objects blended %d (identical prev/cur %d, avg move %.1f) held: dup %d no-prev %d cut %d blend-fail %d | prevValid %d cutHold %d cut %06X",
                     g_dN, g_dN ? g_dT / g_dN : 0.0, g_blended, g_dSame, g_blended ? g_dMove / g_blended : 0.0, g_dDup, g_dNoPrev, g_dCut, g_dFail,
                     g_prevValid, g_cutHold, *(DWORD*)A_STAGE_ROOM_CUT & 0xFFFFFF);
+            if (g_debug >= 2 && g_m0Ticks) {
+                Log("   outside gameplay: %d ticks, transform recs/tick %.1f (moved %d), prims/tick %.1f (moved %d)",
+                    g_m0Ticks, (double)g_m0Rec / g_m0Ticks, g_m0RecMoved, (double)g_m0Prim / g_m0Ticks, g_m0PrimMoved);
+                g_m0Ticks = g_m0Rec = g_m0Prim = g_m0RecMoved = g_m0PrimMoved = 0;
+            }
             if (g_debug >= 2) Log("   PACE grid error avg %.2f ms over %d slots, nudged %d", g_paceErrN ? g_paceErrSum / g_paceErrN : 0.0, g_paceErrN, g_paceNudged);
             g_paceErrSum = 0; g_paceErrN = g_paceNudged = 0;
             g_dN = g_dDup = g_dNoPrev = g_dCut = g_dFail = g_dSame = 0; g_dT = g_dMove = 0;
@@ -773,7 +898,83 @@ static void* DetourN(DWORD at, void* to, const BYTE* expect, int n) {
 
 static void* Detour5(DWORD at, void* to, const BYTE* expect) { return DetourN(at, to, expect, 5); }
 
+// Like DetourN, but if another mod (e.g. RE:Enhance in RE2) already replaced the function's start with a jmp into
+// its own code, chain onto it: the jmp is pointed at our hook and the other mod's code becomes "the original" we
+// call, so both run (ours first). Only the game's own address is used, not the other mod's internals.
+static int g_chainedHooks;
+static void* DetourOrChain(DWORD at, void* to, const BYTE* expect, int n) {
+    void* t = DetourN(at, to, expect, n);
+    if (t) return t;
+    BYTE* p = (BYTE*)at;
+    if (p[0] != 0xE9) return 0;
+    DWORD target = at + 5 + *(int*)(p + 1);
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery((void*)target, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT || !(mbi.Protect & 0xF0)) return 0;   // must be executable
+    DWORD old;
+    VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old);
+    *(int*)(p + 1) = (int)((DWORD)to - (at + 5));
+    VirtualProtect(p, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, 5);
+    g_chainedHooks++;
+    return (void*)target;
+}
+
+// A message shown once the game window is in front, from its own thread (for when no game hook runs at all).
+static DWORD WINAPI DeferredMessageThread(LPVOID text) {
+    for (int i = 0; i < 240; i++) {
+        Sleep(500);
+        DWORD pid = 0; HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid);
+        if (pid == GetCurrentProcessId()) { Sleep(2000); ShowMessage((const char*)text, 10000); break; }
+    }
+    return 0;
+}
+
+static int EnhanceStandDown(int re2) {
+    if (!EnhanceIniPath()) return 0;
+    int fps60 = EnhanceRead60();
+    if (fps60 < 0) fps60 = 0;
+    g_enh60 = fps60;
+    Log("RE:Enhance detected (RE_ENHANCE.ini, Gameplay60FPS=%d)", fps60);
+    if (re2) {
+        // RE2: REuncap installs its hooks either way and follows the setting while the game runs (EnhancePoll).
+        g_enhWatch = 1;
+        if (fps60) {
+            g_enabled = 0; g_enhPaused = 1;
+            Log("RE:Enhance's own 60 FPS is on - REuncap starts paused (it resumes when Gameplay60FPS is switched off)");
+            if (g_toggleMsg) strcpy_s(g_startMsg, "RE:Enhance's 60 FPS is on - REuncap is paused. Switch it off in RE:Enhance's menu to use REuncap.");
+        }
+        return 0;
+    }
+    if (!fps60) return 0;
+    Log("RE:Enhance's own 60 FPS is on - REuncap stays inactive (set Gameplay60FPS=0 in RE_ENHANCE.ini to use REuncap)");
+    static char msg[] = "RE:Enhance's 60 FPS is on - REuncap is inactive. Set Gameplay60FPS=0 in RE_ENHANCE.ini to use REuncap.";
+    if (g_toggleMsg) { HANDLE th = CreateThread(0, 0, DeferredMessageThread, msg, 0, 0); if (th) CloseHandle(th); }
+    return 1;
+}
+
 static char g_iniPath[MAX_PATH];
+// reuncap.ini starts with "; REuncap vX.Y" (from v1.2 on). An ini from an older version keeps working, but lacks
+// newer settings and their descriptions (and v1.2's sets ToggleKey=123 = F12), so say so - in the log and, once
+// the game window is up, on screen.
+static int VersionNum(const char* v) {   // "1.2" / "1.0.1" -> 10200 / 10001
+    int a = 0, b = 0, c = 0; sscanf_s(v, "%d.%d.%d", &a, &b, &c); return a * 10000 + b * 100 + c;
+}
+static void CheckIniVersion(const char* ini) {
+    char line[128] = ""; FILE* f = 0;
+    if (fopen_s(&f, ini, "r") != 0 || !f) return;   // no ini at all: defaults, nothing to warn about
+    if (!fgets(line, sizeof line, f)) line[0] = 0;
+    fclose(f);
+    const char* tag = strstr(line, "REuncap v");
+    char iniVer[32] = "";
+    if (tag) { sscanf_s(tag + 9, "%31[0-9.]", iniVer, (unsigned)sizeof iniVer); }
+    if (iniVer[0] && VersionNum(iniVer) >= VersionNum(REUNCAP_INI_VERSION)) return;
+    char from[48]; if (iniVer[0]) sprintf_s(from, "REuncap v%s", iniVer); else strcpy_s(from, "before REuncap v1.2");
+    Log("NOTE: reuncap.ini is from %s (settings changed in v" REUNCAP_INI_VERSION ", this is v" REUNCAP_VERSION ") - it still "
+        "works, but copy the new reuncap.ini from the download to get the new settings and their descriptions", from);
+    if (g_toggleMsg) {
+        sprintf_s(g_startMsg, "reuncap.ini is from %s - use the new reuncap.ini from the download for the new settings.", from);
+    }
+}
 static void LoadConfig(const char* dir) {
     char* ini = g_iniPath; sprintf_s(g_iniPath, "%sreuncap.ini", dir);
     g_enabled = GetPrivateProfileIntA("REuncap", "Enabled", 1, ini);
@@ -782,9 +983,11 @@ static void LoadConfig(const char* dir) {
     g_debug   = GetPrivateProfileIntA("REuncap", "DebugLog", 0, ini);
     g_bench   = GetPrivateProfileIntA("REuncap", "BenchFrames", 0, ini);
     g_fpsCap  = GetPrivateProfileIntA("REuncap", "FpsCap", -1, ini);
+    g_iniFpsCap = g_fpsCap;
     g_simLoadMs = GetPrivateProfileIntA("REuncap", "SimulateLoadMs", 0, ini);
     char buf[32];
     GetPrivateProfileStringA("REuncap", "MaxMovePerTick", "2500", buf, sizeof buf, ini); g_maxMove = (float)atof(buf);
+    CheckIniVersion(ini);
 }
 
 static int PatchCallIfTarget(DWORD site, DWORD expect, void* to) {
@@ -827,13 +1030,26 @@ static void Init(HMODULE self) {
     if (!ev || GetLastError() == ERROR_ALREADY_EXISTS) return;
     char dir[MAX_PATH];
     FindOwnDir(self, dir);
+    // Keep the last 5 logs: reuncap.log is always the newest, older ones become reuncap.1.log (previous)
+    // .. reuncap.4.log (oldest); the one beyond that is deleted.
     char logp[MAX_PATH]; sprintf_s(logp, "%sreuncap.log", dir);
+    for (int k = 4; k >= 1; k--) {
+        char from[MAX_PATH], to[MAX_PATH];
+        if (k == 1) strcpy_s(from, logp); else sprintf_s(from, "%sreuncap.%d.log", dir, k - 1);
+        sprintf_s(to, "%sreuncap.%d.log", dir, k);
+        if (k == 4) DeleteFileA(to);
+        MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
+    }
     g_log = _fsopen(logp, "w", _SH_DENYNO);
-    Log("REuncap v" REUNCAP_VERSION);
+    SYSTEMTIME st; GetLocalTime(&st);
+    Log("REuncap v" REUNCAP_VERSION "  (started %04d-%02d-%02d %02d:%02d:%02d)", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     LoadConfig(dir);
     QueryPerformanceFrequency(&g_qpf);
     g_statT = NowMs();
     timeBeginPeriod(1);   // 1 ms Sleep granularity for frame pacing (both games)
+    UpdateRefresh();   // FpsCap -1 needs the monitor's refresh rate from the start, in every game
+    Log("monitor refresh %d Hz, FpsCap %d", g_refresh, g_fpsCap);
+    if (EnhanceStandDown(IsRe2())) return;
     if (IsRe2()) { Re2Init(); return; }
     if (IsRe3()) { Re3Init(); return; }
 
@@ -865,8 +1081,6 @@ static void Init(HMODULE self) {
         g_MainLoopTramp = (MainLoopFn)DetourN(F_MAIN_LOOP, (void*)MainLoop_Hook, kMainLoop, 7);
         if (!g_MainLoopTramp) Log("main_loop prologue mismatch - pacing falls back to estimates");
     }
-    UpdateRefresh();
-    Log("monitor refresh %d Hz, FpsCap %d", g_refresh, g_fpsCap);
     int hooked = 0;
     for (DWORD a : kPrimInsertSites) {
         BYTE* b = (BYTE*)a;

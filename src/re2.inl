@@ -42,7 +42,7 @@ static int g_sprTagN, g_r2RenderCalls;
 static double g_r2AnyTick = 1000.0 / 30.0;
 static int g_r2Pacing = 0;   // 0 = continuous grid (exact cap, like RE1), 1 = whole frames per tick   // per tick: tagged sprites, real RenderOT calls
 
-struct R2Rec { void* obj; int site; char* prim; int dup; float m[16]; };
+struct R2Rec { void* obj; int site; int occ; char* prim; int dup; float m[16]; };   // occ: n-th draw of obj/site this tick
 #define R2_MAX_REC 1024
 static R2Rec g_r2A[R2_MAX_REC], g_r2B[R2_MAX_REC];
 static R2Rec* g_r2cur = g_r2A; static int g_r2curN;
@@ -72,18 +72,20 @@ static void LToR2(const float* L, const float* like, float* m) {
     for (int r = 0; r < 3; r++) { m[r * 4 + 0] = L[r * 4 + 0]; m[r * 4 + 1] = L[r * 4 + 1]; m[r * 4 + 2] = L[r * 4 + 2]; m[r * 4 + 3] = L[12 + r]; }
 }
 
-static R2Rec* R2Find(R2Rec* a, int n, void* obj, int site) {
-    for (int i = 0; i < n; i++) if (a[i].obj == obj && a[i].site == site) return &a[i];
+static R2Rec* R2Find(R2Rec* a, int n, void* obj, int site, int occ = 0) {
+    for (int i = 0; i < n; i++) if (a[i].obj == obj && a[i].site == site && a[i].occ == occ) return &a[i];
     return 0;
 }
 
 static void R2Record(int site, char* prim) {
     if (!prim || !g_r2SubmitObj || g_r2InExtra) return;
-    R2Rec* r = R2Find(g_r2cur, g_r2curN, g_r2SubmitObj, site);
-    if (r) { r->dup = 1; r->prim = prim; memcpy(r->m, prim + R2_PRIM_MTX, 64); return; }
+    // An object can be drawn more than once per tick - e.g. the interrogation room's mirror draws Leon a second
+    // time, reflected. Each draw is matched with the same draw (same occurrence number) of the previous tick.
+    int occ = 0;
+    for (int i = 0; i < g_r2curN; i++) if (g_r2cur[i].obj == g_r2SubmitObj && g_r2cur[i].site == site) occ++;
     if (g_r2curN >= R2_MAX_REC) { g_r2Overflow = 1; return; }
-    r = &g_r2cur[g_r2curN++];
-    r->obj = g_r2SubmitObj; r->site = site; r->prim = prim; r->dup = 0;
+    R2Rec* r = &g_r2cur[g_r2curN++];
+    r->obj = g_r2SubmitObj; r->site = site; r->occ = occ; r->prim = prim; r->dup = 0;
     memcpy(r->m, prim + R2_PRIM_MTX, 64);
 }
 static int __fastcall R2Ins1_Hook(void* marni, void* edx, char* prim, int depth) {
@@ -110,7 +112,111 @@ static int __fastcall R2Shadow_Hook(void* marni, void* edx, char* prim, int dept
     return ret;
 }
 
+// Room objects (pushable statues/blocks, item boxes and other room models) are drawn by their own routine
+// (0x43D6F7: a jump table adds variant pieces, then the common insert at 0x43D90B), not by 0x444EA0. Their prims
+// keep the same address from tick to tick and carry the same model->view matrix at +0xC, so - like shadows - the
+// prim address is the key.
+static const DWORD kR2RoomObjSites[] = { 0x43D7AD, 0x43D828, 0x43D85A, 0x43D8BD, 0x43D90B };
+static int __fastcall R2RoomObj_Hook(void* marni, void* edx, char* prim, int depth) {
+    int ret = ((Ins2Fn)R2_MARNI_INSERT)(marni, edx, prim, depth);
+    if (prim && *(float*)(prim + R2_PRIM_MTX + 15 * 4) == 1.0f) {
+        void* saved = g_r2SubmitObj;
+        g_r2SubmitObj = prim;
+        R2Record(4, prim);
+        g_r2SubmitObj = saved;
+    }
+    return ret;
+}
+
+// Door transitions: the door model is drawn by the door routine's insert at 0x432CC3 (~6 prims per tick, stable
+// addresses, the usual matrix at +0xC). The game runs the door at 60 ticks/s, outside the 30 Hz gameplay test, so
+// a tick that drew door prims gets in-between frames of its own (timed with the door's tick length).
+#define R2_DOOR_SITE 0x00432CC3
+static int g_r2DoorCur;                 // door prims were drawn in the current tick
+static double g_r2DoorP = 1000.0 / 60.0; // door tick length (fast-adapting)
+static int __fastcall R2Door_Hook(void* marni, void* edx, char* prim, int depth) {
+    int ret = ((Ins2Fn)R2_MARNI_INSERT)(marni, edx, prim, depth);
+    if (prim && !g_r2InExtra && *(float*)(prim + R2_PRIM_MTX + 15 * 4) == 1.0f) {
+        void* saved = g_r2SubmitObj;
+        g_r2SubmitObj = prim;
+        R2Record(5, prim);
+        g_r2SubmitObj = saved;
+        g_r2DoorCur = 1;
+    }
+    return ret;
+}
+
+// DebugLog >= 2 census of the game's other Marni::Insert call sites (room objects such as pushable statues may
+// be drawn there): per site, inserts per tick, how many prims carry a model matrix (+0xC, m[15] == 1) and how
+// many of those moved since the previous tick (same prim address).
+static const DWORD kR2OtherInsertSites[] = { 0x432F24, 0x436C1C, 0x437B73, 0x43D6EB,
+    0x43DACD, 0x43E6E0, 0x43EBEF, 0x440927, 0x4409ED, 0x440B48, 0x440D99, 0x442489 };
+#define R2_CEN_SITES (sizeof kR2OtherInsertSites / sizeof kR2OtherInsertSites[0])
+struct R2CenPrim { char* prim; float t[3]; };
+static struct { int n, mtx, moved; R2CenPrim last[64]; int lastN; R2CenPrim cur[64]; int curN; DWORD sz; } g_r2Cen[R2_CEN_SITES];
+static int __fastcall R2CensusIns_Hook(void* marni, void* edx, char* prim, int depth) {
+    int ret = ((Ins2Fn)R2_MARNI_INSERT)(marni, edx, prim, depth);
+    if (g_r2InExtra || !prim) return ret;
+    DWORD site = (DWORD)_ReturnAddress() - 5;
+    for (int i = 0; i < (int)R2_CEN_SITES; i++) if (kR2OtherInsertSites[i] == site) {
+        auto& c = g_r2Cen[i]; c.n++;
+        __try {
+            float* m = (float*)(prim + R2_PRIM_MTX);
+            if (m[15] == 1.0f) {
+                c.mtx++;
+                float t[3] = { m[3], m[7], m[11] };
+                for (int k = 0; k < c.lastN; k++) if (c.last[k].prim == prim) {
+                    if (fabsf(c.last[k].t[0] - t[0]) + fabsf(c.last[k].t[1] - t[1]) + fabsf(c.last[k].t[2] - t[2]) > 0.01f) c.moved++;
+                    break;
+                }
+                if (c.curN < 64) { c.cur[c.curN].prim = prim; memcpy(c.cur[c.curN].t, t, 12); c.curN++; }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        break;
+    }
+    return ret;
+}
+static void R2CensusEndTick() {
+    for (int i = 0; i < (int)R2_CEN_SITES; i++) { auto& c = g_r2Cen[i]; memcpy(c.last, c.cur, sizeof c.cur); c.lastN = c.curN; c.curN = 0; }
+}
+
+// DebugLog >= 2 with another mod's hook on Marni::Insert (RE:Enhance): every insert, counted by caller (return
+// address), to see which routines draw the models when none reach the usual sites.
+static Ins2Fn g_r2InsAllTramp;
+struct R2Caller { DWORD ra; int n, mtx; };
+static R2Caller g_r2Callers[64]; static int g_r2CallerN, g_r2SubmitCalls;
+static int __fastcall R2InsAll_Hook(void* marni, void* edx, char* prim, int depth) {
+    if (!g_r2InExtra && prim) {
+        DWORD ra = (DWORD)_ReturnAddress();
+        int i = 0; while (i < g_r2CallerN && g_r2Callers[i].ra != ra) i++;
+        if (i == g_r2CallerN && i < 64) { g_r2Callers[i].ra = ra; g_r2Callers[i].n = g_r2Callers[i].mtx = 0; g_r2CallerN++; }
+        if (i < 64) {
+            g_r2Callers[i].n++;
+            __try { if (*(float*)(prim + R2_PRIM_MTX + 15 * 4) == 1.0f) g_r2Callers[i].mtx++; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    return g_r2InsAllTramp(marni, edx, prim, depth);
+}
+static void R2CallersLog() {
+    if (!g_r2InsAllTramp) return;
+    WORD* sr = (WORD*)R2_STAGE_ROOM;
+    Log("    room %X%02X cam %d: submit calls %d, insert callers %d", sr[0] + 1, sr[1], sr[2], g_r2SubmitCalls, g_r2CallerN);
+    for (int k = 0; k < 16; k++) {   // biggest first
+        int b = -1; for (int i = 0; i < g_r2CallerN; i++) if (g_r2Callers[i].n > 0 && (b < 0 || g_r2Callers[i].n > g_r2Callers[b].n)) b = i;
+        if (b < 0) break;
+        char mod[MAX_PATH] = "?"; HMODULE hm = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)g_r2Callers[b].ra, &hm)) {
+            GetModuleFileNameA(hm, mod, MAX_PATH);
+        }
+        const char* base = strrchr(mod, '\\'); base = base ? base + 1 : mod;
+        Log("      caller %08X (%s+%X): %d inserts, %d with matrix", g_r2Callers[b].ra - 5, base, g_r2Callers[b].ra - 5 - (DWORD)hm, g_r2Callers[b].n, g_r2Callers[b].mtx);
+        g_r2Callers[b].n = -g_r2Callers[b].n;   // mark as printed
+    }
+    g_r2CallerN = 0; g_r2SubmitCalls = 0;
+}
+
 static void __cdecl R2Submit_Hook(void* obj, int flag, int depth) {
+    if (!g_r2InExtra) g_r2SubmitCalls++;
     g_r2SubmitObj = obj;
     g_r2SubmitTramp(obj, flag, depth);
     g_r2SubmitObj = 0;
@@ -119,7 +225,8 @@ static void __cdecl R2Submit_Hook(void* obj, int flag, int depth) {
 static void R2EndTick() {
     R2Rec* t = g_r2prev; g_r2prev = g_r2cur; g_r2cur = t;
     g_r2prevN = g_r2curN; g_r2curN = 0;
-    g_r2prevValid = g_r2InGame && !g_r2Overflow;
+    g_r2prevValid = (g_r2InGame || g_r2DoorCur) && !g_r2Overflow;
+    g_r2DoorCur = 0;
     g_r2Overflow = 0;
     if (g_r2CutHold > 0) g_r2CutHold--;
 }
@@ -147,6 +254,7 @@ static int __fastcall R2Reset_Hook(void* marni, void* edx) {
             double d = now - g_r2LastTick;
             if (d > 25.0 && d < 45.0) g_tickPeriod = g_tickPeriod * 0.98 + d * 0.02;   // long-run mean of CR's grid
             if (d > 10.0 && d < 45.0) g_r2AnyTick = g_r2AnyTick * 0.9 + d * 0.1;      // whatever the current loop rate is
+            if (d > 10.0 && d < 28.0) g_r2DoorP = g_r2DoorP * 0.5 + d * 0.5;            // 60 Hz ticks (door transitions)
             // 30 Hz gameplay; menus/title/doors tick at 60. A single long tick (the new background loading
             // after a camera cut, any other stall) keeps the current state - treating it as "left gameplay"
             // cost the next two ticks their in-between frames (30 fps-looking motion after every cut).
@@ -375,6 +483,95 @@ static void R2Restore(char* marni) {
     }
 }
 
+// ---- RE:Enhance widescreen pan ------------------------------------------------------------------
+// RE:Enhance's 16:9 mode shows a vertical window of the 4:3 picture that follows the player. Its target moves
+// once per tick, the window it shows only at 60 Hz, so above 60 fps the whole picture panned in 60 Hz steps.
+// Each of our frames gets the window at its own point in time: the per-tick target blended with the same t as
+// the models. Addresses are inside RE:Enhance's bio2hd.asi image (V336); any other build is left alone.
+static float* g_r2PanTarget;                 // per-tick target
+static float* g_r2PanShow[2];                // the shown window (RE:Enhance keeps two copies)
+static float g_r2PanPrev, g_r2PanCur, g_r2PanVal, g_r2PanSave[2];
+static int g_r2PanHave, g_r2PanOn;
+static int g_r2PanSetN, g_r2PanKeptN, g_r2PanChgN, g_r2PanTickN;   // DebugLog >= 2
+static void R2PanFind() {
+    HMODULE m = GetModuleHandleA("bio2hd.asi");
+    if (!m) return;
+    __try {
+        BYTE* b = (BYTE*)m;
+        IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
+        if (nt->OptionalHeader.SizeOfImage != 0x8D24000 || memcmp(b + 0x1EA503, "crop_top_millionths", 19)) {
+            Log("RE:Enhance widescreen pan: unknown bio2hd.asi build - pan not smoothed (stays at 60 Hz)"); return;
+        }
+        g_r2PanTarget = (float*)(b + 0x5DFE348);
+        g_r2PanShow[0] = (float*)(b + 0x5DFE340);
+        g_r2PanShow[1] = (float*)(b + 0x2E262F4);
+        Log("RE:Enhance widescreen pan smoothing: on (bio2hd.asi V336)");
+    } __except (EXCEPTION_EXECUTE_HANDLER) { g_r2PanTarget = 0; }
+}
+static int R2PanValid(float v) { return v >= 0.0f && v <= 0.5f; }
+// Once per tick, at its real Present, where the target has always been updated (at Clear it sometimes had and
+// sometimes not, which made the window step unevenly). The next tick's frames then run from the previous
+// target to this one: the window trails the models by one tick, evenly.
+static void R2PanTick(float v) {
+    if (!g_r2PanTarget) return;
+    if (!R2PanValid(v)) { g_r2PanHave = 0; return; }
+    g_r2PanPrev = g_r2PanHave ? g_r2PanCur : v; g_r2PanCur = v; g_r2PanHave = 1;
+}
+static void R2PanApply(float t) {   // before a present
+    g_r2PanOn = 0;
+    if (!g_r2PanTarget || !g_r2PanHave) return;
+    g_r2PanVal = g_r2PanPrev + (g_r2PanCur - g_r2PanPrev) * t;
+    for (int k = 0; k < 2; k++) { g_r2PanSave[k] = *g_r2PanShow[k]; *g_r2PanShow[k] = g_r2PanVal; }
+    g_r2PanOn = 1;
+}
+static void R2PanAfter() {   // after it: give RE:Enhance its own value back unless it set a new one meanwhile
+    if (!g_r2PanOn) return;
+    g_r2PanSetN++;
+    int kept = 1;
+    for (int k = 0; k < 2; k++) {
+        if (*g_r2PanShow[k] == g_r2PanVal) *g_r2PanShow[k] = g_r2PanSave[k];
+        else kept = 0;
+    }
+    g_r2PanKeptN += kept;
+    g_r2PanOn = 0;
+}
+
+// DebugLog >= 2: how many presents actually reach DirectDraw - Flip / Blt on Marni's primary surface
+// (Marni::Present uses one of the two). Another mod's Present hook could drop or delay some of ours.
+#define R2_PRIMARY_OFF 0x008C83E8
+typedef HRESULT (__stdcall *R2FlipFn)(void* s, void* over, DWORD flags);
+typedef HRESULT (__stdcall *R2BltFn)(void* s, RECT* dst, void* src, RECT* srcRect, DWORD flags, void* fx);
+static R2FlipFn g_r2Flip; static R2BltFn g_r2Blt; static void* g_r2Primary;
+static int g_r2FlipN, g_r2BltN; static double g_r2FlipMs, g_r2FlipLast, g_r2FlipGapMax;
+static void R2NoteFlip(double a) {
+    double b = NowMs();
+    g_r2FlipMs += b - a;
+    if (g_r2FlipLast > 0 && b - g_r2FlipLast > g_r2FlipGapMax) g_r2FlipGapMax = b - g_r2FlipLast;
+    g_r2FlipLast = b;
+}
+static HRESULT __stdcall R2Flip_Hook(void* s, void* over, DWORD flags) {
+    if (s != g_r2Primary) return g_r2Flip(s, over, flags);
+    double a = NowMs(); HRESULT r = g_r2Flip(s, over, flags); g_r2FlipN++; R2NoteFlip(a); return r;
+}
+static HRESULT __stdcall R2Blt_Hook(void* s, RECT* dst, void* src, RECT* srcRect, DWORD flags, void* fx) {
+    if (s != g_r2Primary) return g_r2Blt(s, dst, src, srcRect, flags, fx);
+    double a = NowMs(); HRESULT r = g_r2Blt(s, dst, src, srcRect, flags, fx); g_r2BltN++; R2NoteFlip(a); return r;
+}
+static void R2HookPrimary(char* marni) {
+    __try {
+        void* p = *(void**)(marni + R2_PRIMARY_OFF);
+        if (!p || p == g_r2Primary) return;
+        void** vt = *(void***)p;
+        DWORD old;
+        if (!VirtualProtect(vt, 12 * 4, PAGE_EXECUTE_READWRITE, &old)) return;
+        if (vt[5] != (void*)R2Blt_Hook) { g_r2Blt = (R2BltFn)vt[5]; vt[5] = (void*)R2Blt_Hook; }
+        if (vt[11] != (void*)R2Flip_Hook) { g_r2Flip = (R2FlipFn)vt[11]; vt[11] = (void*)R2Flip_Hook; }
+        VirtualProtect(vt, 12 * 4, old, &old);
+        g_r2Primary = p;
+        Log("    present census: hooked primary surface %p (vtable %p)", p, vt);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static char* g_r2Marni;
 static int g_r2Force;   // debug: run extra frames outside gameplay too (to measure present behaviour)
 static double g_r2PresSum, g_r2PresMax, g_r2DrawSum; static int g_r2PresN, g_r2ExtraN;
@@ -384,7 +581,7 @@ static void R2RenderAt(float t) {
     float L0[16], L1[16], Lo[16], o[16];
     for (int i = 0; i < g_r2curN; i++) {
         R2Rec* c = &g_r2cur[i];
-        R2Rec* p = (c->dup || !g_r2prevValid || g_r2CutHold) ? 0 : R2Find(g_r2prev, g_r2prevN, c->obj, c->site);
+        R2Rec* p = (c->dup || !g_r2prevValid || g_r2CutHold) ? 0 : R2Find(g_r2prev, g_r2prevN, c->obj, c->site, c->occ);
         if (!p || p->dup) {
             if (c->dup || (p && p->dup)) g_r2trCur.hDup++; else if (g_r2CutHold) g_r2trCur.hCut++; else g_r2trCur.hPrev++;
             continue;
@@ -410,7 +607,9 @@ static void R2RenderAt(float t) {
     ((ThisFn0)R2_RENDEROT)(marni, 0);
     if (!g_r2CutHold) R2ReplayPass2(marni, t);
     double t1 = NowMs();
+    R2PanApply(t);
     g_r2PresentTramp(marni, 0);
+    R2PanAfter();
     double t2 = NowMs();
     g_r2DrawSum += t1 - t0; g_r2PresSum += t2 - t1; if (t2 - t1 > g_r2PresMax) g_r2PresMax = t2 - t1; g_r2PresN++; g_r2ExtraN++; g_r2trCur.extras++;
     if (t1 - t0 > g_r2trCur.drawMax) g_r2trCur.drawMax = (float)(t1 - t0);
@@ -547,11 +746,12 @@ static int __fastcall R2Clear_Hook(void* marni, void* edx) {
         if (g_debug >= 2) Log("    cut: words %04X %04X %04X", *(WORD*)R2_STAGE_ROOM, *(WORD*)(R2_STAGE_ROOM + 2), *(WORD*)(R2_STAGE_ROOM + 4));
     }
 
-    if (!g_r2InExtra && !g_r2DidFrames && g_enabled && (g_r2InGame || g_r2Force) && !g_r2CutHold && !R2CrTextShown() && marni == *(void**)R2_MARNI_PTR) {
+    int door = g_r2DoorCur && !g_r2InGame;
+    if (!g_r2InExtra && !g_r2DidFrames && g_enabled && (g_r2InGame || g_r2Force || door) && !g_r2CutHold && !R2CrTextShown() && marni == *(void**)R2_MARNI_PTR) {
         g_r2DidFrames = 1;
         g_r2Marni = (char*)marni;
         g_r2trCur.clearAt = (float)(NowMs() - g_tickStart);
-        double P = g_r2InGame ? g_tickPeriod : g_r2AnyTick;
+        double P = g_r2InGame ? g_tickPeriod : door ? g_r2DoorP : g_r2AnyTick;
         RenderAtFn ra = g_r2CuState ? R2RenderAtCU : R2RenderAt;
         if (g_r2Pacing == 1) R2Pace(P, ra); else PaceExtraFrames(P, ra);
         if (g_r2CuState == 1 || (g_r2CuState == 2 && R2CuLag(NowMs()) > 0.0)) {
@@ -567,18 +767,27 @@ static int __fastcall R2Clear_Hook(void* marni, void* edx) {
 }
 static int __fastcall R2Present_Hook(void* marni, void* edx) {
     if (g_r2InExtra) return g_r2PresentTramp(marni, edx);
+    if (g_debug >= 2) R2HookPrimary((char*)marni);
     g_r2trCur.presentCall = (float)(NowMs() - g_tickStart);
     int r;
+    float panNow = g_r2PanTarget ? *g_r2PanTarget : 0.0f;   // this tick's target (RE:Enhance has set it by now)
     if (g_r2CuSuppress || g_r2SkipReal) { r = g_r2LastPresentRet; g_r2trCur.supp += g_r2CuSuppress; }   // catch-up: not shown
-    else r = g_r2LastPresentRet = g_r2PresentTramp(marni, edx);
+    else {
+        if (g_r2DidFrames) R2PanApply(1.0f);   // the real frame: the end point of this tick's in-between frames
+        r = g_r2LastPresentRet = g_r2PresentTramp(marni, edx);
+        R2PanAfter();
+    }
+    if (g_debug >= 2 && g_r2PanTarget) { g_r2PanTickN++; if (*g_r2PanTarget != panNow) g_r2PanChgN++; }
+    R2PanTick(panNow);
     g_r2CuSuppress = g_r2SkipReal = 0;
     R2SpritesEndTick();
+    if (g_debug >= 2) R2CensusEndTick();
     R2EndTick();   // everything submitted up to this present belongs to the frame just shown
     g_r2Armed = 1;
     g_r2trCur.presents++; g_r2trCur.presentEnd = (float)(NowMs() - g_tickStart);
     if (g_r2DidFrames && g_r2RealStart > 0) {
         double c = NowMs() - g_r2RealStart;           // the tick's real frame: Clear .. Present
-        if (!g_r2CutHold && c < 30.0) g_costPeak = c > g_costPeak ? c : g_costPeak * 0.9 + c * 0.1;
+        if (!g_r2CutHold && c < 30.0) g_costPeak = g_robustPeaks ? PeakWinAdd(g_realWin, c) : c > g_costPeak ? c : g_costPeak * 0.9 + c * 0.1;
         NotePresent(g_r2RealStart);
         g_r2RealStart = 0;
     }
@@ -592,6 +801,22 @@ static int __fastcall R2Present_Hook(void* marni, void* edx) {
                 g_frames / secs, g_ticks / secs, g_tickPeriod, FrameIntervalMs() > 0 ? 1000.0 / FrameIntervalMs() : 0.0,
                 mean, sd, g_ivMax, (double)g_blended / (g_ticks ? g_ticks : 1), g_r2prevN, g_r2InGame, g_costPeak + 0.3);
             if (g_debug >= 2) Log("    sprites: %d tagged/tick, %d shifts in window; pass2: %d prims", g_s1prevN, g_s1Shifted, g_p2N);
+            if (g_debug >= 2) for (int i = 0; i < (int)R2_CEN_SITES; i++) if (g_r2Cen[i].n) {
+                Log("    other insert site %06X: %d inserts, %d with matrix, %d moved (in window)", kR2OtherInsertSites[i], g_r2Cen[i].n, g_r2Cen[i].mtx, g_r2Cen[i].moved);
+                g_r2Cen[i].n = g_r2Cen[i].mtx = g_r2Cen[i].moved = 0;
+            }
+            if (g_debug >= 2) R2CallersLog();
+            if (g_debug >= 2 && g_r2Primary) {
+                int n = g_r2FlipN + g_r2BltN;
+                Log("    reached DirectDraw: %.1f/s (flip %d, blt %d), call avg %.2f ms, longest gap %.1f ms",
+                    n / secs, g_r2FlipN, g_r2BltN, n ? g_r2FlipMs / n : 0.0, g_r2FlipGapMax);
+                g_r2FlipN = g_r2BltN = 0; g_r2FlipMs = g_r2FlipGapMax = 0;
+            }
+            if (g_debug >= 2 && g_r2PanTarget) {
+                Log("    pan: target %.4f, set %d presents, untouched by RE:Enhance %d; target moved during the real present %d/%d ticks",
+                    *g_r2PanTarget, g_r2PanSetN, g_r2PanKeptN, g_r2PanChgN, g_r2PanTickN);
+                g_r2PanSetN = g_r2PanKeptN = g_r2PanChgN = g_r2PanTickN = 0;
+            }
             g_s1Shifted = 0;
             if (g_debug >= 2 && g_r2trN) {
                 char line[8192]; int o = 0;
@@ -622,19 +847,29 @@ static void Re2InitInterp() {
     static const BYTE kPresent[6] = { 0x83, 0xEC, 0x74, 0x56, 0x8B, 0xF1 };             // sub esp,0x74; push esi; mov esi,ecx
     g_r2TickTramp    = (VoidFn)DetourN(R2_TICK, (void*)R2Tick_Hook, kTick, 5);
     g_r2SubmitTramp  = (R2SubmitFn)DetourN(R2_SUBMIT, (void*)R2Submit_Hook, kSubmit, 6);
-    g_r2ClearTramp   = (ThisFn0)DetourN(R2_CLEAR, (void*)R2Clear_Hook, kClear, 6);
-    g_r2PresentTramp = (ThisFn0)DetourN(R2_PRESENT, (void*)R2Present_Hook, kPresent, 6);
+    g_r2ClearTramp   = (ThisFn0)DetourOrChain(R2_CLEAR, (void*)R2Clear_Hook, kClear, 6);
+    g_r2PresentTramp = (ThisFn0)DetourOrChain(R2_PRESENT, (void*)R2Present_Hook, kPresent, 6);
     static const BYTE kReset[9] = { 0x56, 0x8B, 0xF1, 0x8D, 0x8E, 0x24, 0x70, 0x8C, 0x00 };  // push esi; mov esi,ecx; lea ecx,[esi+0x8c7024]
-    g_r2ResetTramp = (ThisFn0)DetourN(R2_OT_RESET, (void*)R2Reset_Hook, kReset, 9);
+    g_r2ResetTramp = (ThisFn0)DetourOrChain(R2_OT_RESET, (void*)R2Reset_Hook, kReset, 9);
     int i1 = PatchCallIfTarget(R2_SUBMIT_INS1, R2_MARNI_INSERT, (void*)R2Ins1_Hook);
     int i2 = PatchCallIfTarget(R2_SUBMIT_INS2, R2_MARNI_INSERT, (void*)R2Ins2_Hook);
     int sh = 0;
     for (DWORD a : kR2ShadowSites) sh += PatchCallIfTarget(a, R2_MARNI_INSERT, (void*)R2Shadow_Hook);
+    int dh = PatchCallIfTarget(R2_DOOR_SITE, R2_MARNI_INSERT, (void*)R2Door_Hook);
+    Log("RE2 door transition site hooked: %d", dh);
+    int ro = 0; for (DWORD a : kR2RoomObjSites) ro += PatchCallIfTarget(a, R2_MARNI_INSERT, (void*)R2RoomObj_Hook);
+    Log("RE2 room object sites hooked: %d/%d", ro, (int)(sizeof kR2RoomObjSites / sizeof kR2RoomObjSites[0]));
+    if (g_debug >= 2) { int nc = 0; for (DWORD a : kR2OtherInsertSites) nc += PatchCallIfTarget(a, R2_MARNI_INSERT, (void*)R2CensusIns_Hook); Log("RE2 insert census sites hooked: %d", nc); }
+    if (g_debug >= 2 && *(BYTE*)R2_MARNI_INSERT == 0xE9) {   // only chained (another mod's hook is there)
+        static const BYTE kNone[5] = { 0 };
+        g_r2InsAllTramp = (Ins2Fn)DetourOrChain(R2_MARNI_INSERT, (void*)R2InsAll_Hook, kNone, 5);
+        Log("RE2 insert caller census (chained on Marni::Insert): %d", g_r2InsAllTramp != 0);
+    }
     Log("RE2 shadow sites hooked: %d/3", sh);
     int sa = PatchCallIfTarget(R2_SPR_CALL_A, R2_SPR_A, (void*)R2SprA_Hook);
     int sb = PatchCallIfTarget(R2_SPR_CALL_B, R2_SPR_B, (void*)R2SprB_Hook);
     static const BYTE kRender[9] = { 0x56, 0x8B, 0xF1, 0x8B, 0x86, 0xE0, 0x7E, 0x8C, 0x00 };
-    g_r2RenderTramp2 = (ThisFn0)DetourN(R2_RENDEROT, (void*)R2RenderOT_Hook2, kRender, 9);
+    g_r2RenderTramp2 = (ThisFn0)DetourOrChain(R2_RENDEROT, (void*)R2RenderOT_Hook2, kRender, 9);
     int bb = 0;
     for (DWORD a : kR2BillboardCalls) bb += PatchCallIfTarget(a, R2_BILLBOARD, (void*)R2Billboard_Hook);
     Log("RE2 pass-2 replay: sprite tags %d/2, renderOT hook %d, billboard calls %d/3", sa + sb, g_r2RenderTramp2 != 0, bb);
@@ -646,4 +881,7 @@ static void Re2InitInterp() {
     Log("RE2 tick-start hook %d, cut-skip hook %d (RE2SmoothCameraCuts=%d)", g_r2ResetTramp != 0, sc, g_r2SmoothCuts);
     Log("RE2 interpolation: tick %d submit %d clear %d present %d ins %d/%d",
         g_r2TickTramp != 0, g_r2SubmitTramp != 0, g_r2ClearTramp != 0, g_r2PresentTramp != 0, i1, i2);
+    if (g_chainedHooks) Log("RE2: %d hooks chained onto another mod's hooks (RE:Enhance)", g_chainedHooks);
+    if (g_chainedHooks) { g_robustPeaks = 1; Log("RE2: present-stall tolerant frame budget (RE:Enhance)"); }
+    if (g_chainedHooks && GetPrivateProfileIntA("REuncap", "RE2EnhancePanSmooth", 1, g_iniPath)) R2PanFind();
 }

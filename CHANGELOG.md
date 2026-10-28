@@ -1,5 +1,39 @@
 # REuncap changelog
 
+## v1.4 (2026-10-28)
+**New**
+- **Resident Evil 2 works together with RE:Enhance 4.0.** This compatibility is based specifically on the
+  **currently available pre-release RE2 version of RE:Enhance 4.0**; compatibility with further updates
+  of RE:Enhance 4.0 will be ensured as they come. See "RE:Enhance 4.0" in `README.md`.
+  - **Recommended for RE:Enhance 4.0 users: play in windowed mode** for the most stable frame rate. In
+    RE:Enhance's fullscreen mode the frame rate is less stable (lowering RE:Enhance's antialiasing helps).
+  - REuncap replaces RE:Enhance's own 60 FPS with any frame rate. While RE:Enhance's 60 FPS is on,
+    REuncap pauses; switching it on or off in RE:Enhance's in-game menu pauses or resumes REuncap right
+    away, with a short message.
+  - RE:Enhance's 16:9 mode (pan and scan) pans smoothly at your frame rate (new setting
+    `RE2EnhancePanSmooth`, on by default).
+  - The Resident Evil 2 folder includes a `DDrawCompat.ini` (`PresentDelay = off`). RE:Enhance shows the
+    game through DDrawCompat, whose default let only an uneven ~60 frames per second reach the screen.
+  - Resident Evil and Resident Evil 3: REuncap stays inactive (with a short message) if RE:Enhance's
+    60 FPS is on, ready for the upcoming RE:Enhance 4.0 versions of these games.
+- **Door transitions** (the door opening animation between rooms) are now smooth in all three games.
+- **Resident Evil 2:** room objects such as pushable statues and blocks and item boxes are now smooth,
+  and so is the mirror reflection in the interrogation room.
+- **Resident Evil:** an examined item in the inventory now turns smoothly as well.
+- The frame rate hotkey (`=`) now also includes your own `FpsCap` if it is another number (e.g. 144).
+- If your `reuncap.ini` is older than the settings of the REuncap version you run, a short message in the
+  game says so (it keeps working).
+- `reuncap.log` keeps the logs of the four sessions before as `reuncap.1.log` (previous) to
+  `reuncap.4.log`.
+
+**Fixes**
+- **Resident Evil 2 and 3:** `FpsCap=-1` (your monitor's refresh rate) could stay at 60 fps unless
+  `DebugLog` was on.
+
+**Upgrading:** replace `scripts\reuncap.asi`. Your old `reuncap.ini` keeps working; copy the new one over
+it for the new setting and the updated descriptions. Resident Evil 2 with RE:Enhance 4.0: also copy
+`DDrawCompat.ini` next to the game's `.exe`.
+
 ## v1.3 (2026-10-11)
 **Fixes**
 - **Resident Evil 3:** text in interaction popups no longer slides around while it is written out
@@ -34,7 +68,7 @@
   in Resident Evil and about 90 in Resident Evil 2); a `MulderConfig.save.json` with dgVoodoo2 off is
   included - run `MulderConfig.exe` once and save to apply it.
 
-**Upgrading:** replace `scriptseuncap.asi`. Your old `reuncap.ini` keeps working, but it still sets
+**Upgrading:** replace `scripts\reuncap.asi`. Your old `reuncap.ini` keeps working, but it still sets
 `ToggleKey=123` (F12) explicitly - copy the new `reuncap.ini` over it (or change that line to
 `ToggleKey=187`) to get the new `=` hotkeys and the descriptions of the new settings.
 
