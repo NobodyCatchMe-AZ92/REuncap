@@ -18,7 +18,7 @@
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "gdi32.lib")
 
-#define REUNCAP_VERSION "1.4"
+#define REUNCAP_VERSION "1.4.2"
 // The last version that changed reuncap.ini (new settings / descriptions). An ini older than this gets a
 // "use the new reuncap.ini" note; bump it together with REUNCAP_VERSION whenever make_ini.py changes.
 #define REUNCAP_INI_VERSION "1.4"
@@ -70,6 +70,7 @@ static int   g_bench = 0;
 static int   g_fpsCap = -1;
 static int   g_iniFpsCap = -1;   // FpsCap from reuncap.ini (joins the hotkey cycle if it is not one of its steps)
 static int   g_toggleMsg = 1;   // show a message when the hotkey is pressed (on/off, frame rate)
+static int   g_simRealMs = 0;   // test only (RE2): extra ms of work in the tick's real frame (simulates RE:Enhance 16:9)
 static int   g_simLoadMs = 0;   // test only: extra ms of work per in-between frame (simulates slow hardware)   // -1 = monitor refresh, 0 = uncapped, >0 = fps     // >0: render this many extra frames per tick back-to-back and log timings
 static float g_maxMove = 2500.0f;   // view-space units per tick beyond which we treat it as a cut
 static float g_minDot = 0.5f;       // axis dot below which (>60 deg in one tick) we don't blend
@@ -90,7 +91,7 @@ static int HotkeyDown() {
 // game renders (DirectDraw / D3D9 / D3D11 / dgVoodoo); it is not visible in exclusive fullscreen.
 #define WM_REUNCAP_SHOW (WM_APP + 1)
 static HWND g_toastWnd; static HANDLE g_toastReady;
-static char g_toastText[160]; static HWND g_toastGame; static UINT g_toastMs = 4000;
+static char g_toastText[256]; static HWND g_toastGame; static UINT g_toastMs = 4000;
 static void ToastPaint() {
     RECT cr; if (!g_toastGame || !GetClientRect(g_toastGame, &cr)) return;
     POINT org = { 0, 0 }; ClientToScreen(g_toastGame, &org);
@@ -115,10 +116,28 @@ static void ToastPaint() {
     RECT dr = { pad, pad / 2, pad + ts.cx, pad / 2 + ts.cy };
     DrawTextA(dc, g_toastText, -1, &dr, DT_WORDBREAK | DT_RIGHT | DT_NOPREFIX);
     GdiFlush();
-    // GDI wrote white text on black without alpha: coverage -> premultiplied white text, no background
-    for (int i = 0; i < w * h; i++) {
-        DWORD cov = px[i] & 0xFF;
-        px[i] = (cov << 24) | (cov << 16) | (cov << 8) | cov;
+    // GDI wrote white text on black without alpha: coverage -> premultiplied white text, no background, with a
+    // soft dark outline (the coverage spread by r pixels, 70% black) so it stays readable on light pictures
+    // (the start-up messages land on RE2's white logo screen).
+    int r = fh / 12; if (r < 1) r = 1;
+    BYTE* cov = (BYTE*)malloc((size_t)w * h);
+    if (cov) {
+        for (int i = 0; i < w * h; i++) cov[i] = (BYTE)(px[i] & 0xFF);
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+            DWORD c = cov[y * w + x], s = 0;
+            for (int dy = -r; dy <= r && s < 255; dy++) {
+                int yy = y + dy; if (yy < 0 || yy >= h) continue;
+                for (int dx = -r; dx <= r; dx++) {
+                    int xx = x + dx; if (xx < 0 || xx >= w || dx * dx + dy * dy > r * r + r) continue;
+                    if (cov[yy * w + xx] > s) s = cov[yy * w + xx];
+                }
+            }
+            DWORD a = c + (s * 180 / 255) * (255 - c) / 255;
+            px[y * w + x] = (a << 24) | (c << 16) | (c << 8) | c;
+        }
+        free(cov);
+    } else {
+        for (int i = 0; i < w * h; i++) { DWORD c = px[i] & 0xFF; px[i] = (c << 24) | (c << 16) | (c << 8) | c; }
     }
     int margin = gh / 40;
     POINT dst = { org.x + gw - w - margin, org.y + gh - h - margin }, src = { 0, 0 };
@@ -155,7 +174,7 @@ static void ShowMessage(const char* text, UINT ms = 4000) {
         if (th) { WaitForSingleObject(g_toastReady, 1000); CloseHandle(th); }
     }
     if (!g_toastWnd) return;
-    strcpy_s(g_toastText, text); g_toastMs = ms;
+    strncpy_s(g_toastText, text, _TRUNCATE); g_toastMs = ms;
     g_toastGame = GetForegroundWindow();   // HotkeyDown() only fires while the game's window is in front
     PostMessageA(g_toastWnd, WM_REUNCAP_SHOW, 0, 0);
 }
@@ -623,6 +642,16 @@ static double PeakWinAdd(PeakWin& w, double c) {
     }
     return w.n >= 3 ? d : a;
 }
+// RE2 with an expensive real frame (RE:Enhance's 16:9 composer: 7-8 ms instead of 1-2): the usual anchor puts the
+// real frame a whole frame interval plus its cost before the tick ends - at 120 fps that left room for only two
+// in-between frames (90 fps), although the frames start right at the tick start and the real frame, started one slot
+// later, still ends before the next tick (by its own worst-case cost, the guard). With g_paceLateAnchor and a frame
+// cap that divides the tick evenly (60/90/120...), the real frame goes to the latest grid slot that still ends in
+// time, counted from the first in-between frame (= where it already landed with cheap real frames, so the motion
+// doesn't change when the cost changes). Other caps (100, 144...) can't gain from this without frames closer than the
+// cap: the real frame still needs its own grid slot, so with a 7 ms real frame at most 3 (100) / 4 (144) frames fit
+// in a tick - which the usual anchor already reaches (measured: a late anchor there gave 113 fps at cap 100).
+static int g_paceLateAnchor, g_paceLateUsed;
 static void PaceExtraFrames(double P, RenderAtFn renderAt) {
     double f = FrameIntervalMs();
     double fe = f > 0 ? f : g_presentCost;            // uncapped: frame time = what present allows
@@ -631,6 +660,12 @@ static void PaceExtraFrames(double P, RenderAtFn renderAt) {
     double anchor = g_tickStart + P - fe - guard;     // where the tick's real frame (t = 1) belongs
     double ratio = f > 0 ? P / f : 0;
     int locked = f > 0 && fabs(ratio - floor(ratio + 0.5)) < 0.05;
+    if (g_paceLateAnchor && locked) {
+        double now = NowMs(), latest = deadline - guard;
+        int kStd = (int)floor((anchor - now) / f + 0.5);            // in-between frames the usual anchor allows
+        int kLate = (int)floor((latest - now) / f);                 // ... and the latest safe real-frame slot
+        if (kLate >= kStd && kLate >= 1) { anchor = now + kLate * f; if (kLate > kStd) g_paceLateUsed++; }
+    }
     for (;;) {
         double now = NowMs(), tau = now;
         if (f > 0 && g_lastPresent + f > tau) tau = g_lastPresent + f;
@@ -640,7 +675,7 @@ static void PaceExtraFrames(double P, RenderAtFn renderAt) {
         // pose, which looks like 30 fps) - this is what pulls a mis-aligned grid back into rhythm
         if (k < 1) break;
         if (tau < now) tau = now;
-        double t = (tau - g_tickStart + fe + guard) / P;
+        double t = 1.0 + (tau - anchor) / P;   // the real frame (t = 1) at the anchor; = (tau - tickStart + fe + guard) / P usually
         if (t >= 0.999) break;               // next grid slot belongs to the tick's real frame
         if (tau + g_frameCostPeak + guard > deadline) break;
         if (t < 0.0) t = 0.0;
@@ -665,7 +700,7 @@ static void Re1RenderAt(float t) { RenderIntermediate(g_re1Marni, t); }
 // The hotkey (ToggleKey, = by default): Shift + key switches REuncap on and off; the key alone steps the frame
 // rate cap through 30 / 60 / 90 / 120 / monitor refresh / uncapped (live only - reuncap.ini is not changed).
 static double g_refreshT;
-static char g_startMsg[160]; static double g_startT;   // shown once the game window is up (old reuncap.ini warning)
+static char g_startMsg[256]; static double g_startT;   // shown once the game window is up (old reuncap.ini warning)
 
 // RE:Enhance (HD/feature mod, bio2hd.asi + RE_ENHANCE.ini next to the exe in RE2; RE1/RE3 versions announced) has
 // its own 60 FPS interpolation. Two interpolators would fight, so REuncap never runs while its Gameplay60FPS is on.
@@ -675,6 +710,20 @@ static char g_startMsg[160]; static double g_startT;   // shown once the game wi
 // it off with the hotkey).
 static char g_enhIni[MAX_PATH];
 static int g_enh60 = -1, g_enhWatch, g_enhPaused;
+// Newer RE:Enhance builds (V390: WidescreenComposer) draw door sequences "in true 16:9" on their own frames only; in
+// REuncap's in-between frames the door then appeared stretched into the side borders. While that 16:9 composer is
+// on, door transitions are left to RE:Enhance (its own 60 fps); 4:3 and the V336 pre-release keep REuncap's doors.
+static int g_enhWideDoors;
+// RE:Enhance V390's BETTER FRAME PACING (FramePacing=1) holds every present until its own 60 Hz slot - but only on a
+// monitor whose refresh rate is a multiple of 60 (60/120/180/240 Hz: whole vblanks per slot). REuncap's in-between
+// frames then don't fit into a tick (measured at 120 Hz: 30 fps, 24 ms per present; with it off 114 fps). REuncap
+// can't step around it (RE:Enhance's 16:9 composer sits in the same present). RE:Enhance reads the option only when
+// the game starts (its menu says "PLEASE RESTART YOUR GAME" after a change), so !REuncap-RE-Enhance.asi (src/
+// enhance_settings.cpp), which the ASI loader runs before RE:Enhance, switches it off in RE_ENHANCE.ini - together
+// with Gameplay60FPS. Without that file (or with RE2EnhanceAutoSettings=0) REuncap tells the player at start-up,
+// and the RE2 code also measures how long its presents take and warns once if they are held back.
+// g_enhPacing = the ini value (follows the menu), g_enhPacingActive = what RE:Enhance runs with this session.
+static int g_enhPacing = -1, g_enhPacingActive, g_enhPacingWarned, g_enhHelper;
 static FILETIME g_enhTime; static double g_enhT;
 static int EnhanceIniPath() {
     GetModuleFileNameA(0, g_enhIni, MAX_PATH);
@@ -685,29 +734,56 @@ static int EnhanceIniPath() {
     g_enhTime = fa.ftLastWriteTime;
     return 1;
 }
-// Gameplay60FPS from RE_ENHANCE.ini, -1 if the file can't be read or has no such line (e.g. caught mid-write).
-// Parsed by hand: inside the game, GetPrivateProfileInt returned 0 for a file that said Gameplay60FPS=1 (RE:Enhance
-// hooks a lot of the process).
-static int EnhanceRead60() {
-    int v = -1; char line[256]; FILE* f = 0;
+// Gameplay60FPS from RE_ENHANCE.ini, -1 if the file can't be read or has no such line (e.g. caught mid-write);
+// *wideDoors = Widescreen=1 with WidescreenComposer=1 (see g_enhWideDoors), *pacing = FramePacing (-1 = no such
+// key: older builds). Parsed by hand: inside the game, GetPrivateProfileInt returned 0 for a file that said
+// Gameplay60FPS=1 (RE:Enhance hooks a lot of the process).
+static int EnhanceRead(int* wideDoors, int* pacing) {
+    static const char* const kKeys[4] = { "Gameplay60FPS", "Widescreen", "WidescreenComposer", "FramePacing" };
+    int v[4] = { -1, 0, 0, -1 }; char line[256]; FILE* f = 0;
     if (fopen_s(&f, g_enhIni, "r") != 0 || !f) return -1;
     while (fgets(line, sizeof line, f)) {
-        char* p = line; while (*p == ' ' || *p == '	') p++;
-        if (_strnicmp(p, "Gameplay60FPS", 13)) continue;
-        p += 13; while (*p == ' ' || *p == '	') p++;
-        if (*p == '=') v = atoi(p + 1) ? 1 : 0;
+        char* p = line; while (*p == ' ' || *p == '\t') p++;
+        for (int k = 0; k < 4; k++) {
+            size_t n = strlen(kKeys[k]);
+            if (_strnicmp(p, kKeys[k], n)) continue;
+            char* q = p + n; while (*q == ' ' || *q == '\t') q++;
+            if (*q == '=') v[k] = atoi(q + 1) ? 1 : 0;
+        }
     }
     fclose(f);
-    return v;
+    if (wideDoors) *wideDoors = v[1] == 1 && v[2] == 1;
+    if (pacing) *pacing = v[3];
+    return v[0];
+}
+static void EnhanceSetPacing(int p) {
+    if (p == g_enhPacing) return;
+    int live = g_enhPacing >= 0;   // changed in RE:Enhance's menu while playing (not the first read)
+    g_enhPacing = p;
+    if (!live) return;
+    Log("RE:Enhance's FramePacing changed to %d in game (RE:Enhance applies it at the next start)", p);
+    if (p == 1)
+        ShowMessage(g_enhHelper ? "RE:Enhance's BETTER FRAME PACING limits REuncap's frame rate - REuncap switches it off again at the next start."
+                                : "RE:Enhance's BETTER FRAME PACING limits REuncap's frame rate - please switch it off again.", 8000);
+    else if (g_enhPacingActive)
+        ShowMessage("RE:Enhance's BETTER FRAME PACING was switched off - restart the game for REuncap's full frame rate.", 8000);
+}
+static void EnhanceSetWideDoors(int w) {
+    if (w == g_enhWideDoors) return;
+    g_enhWideDoors = w;
+    Log(w ? "RE:Enhance 16:9 composer on - door transitions are left to RE:Enhance (its own 60 fps)"
+          : "RE:Enhance 16:9 composer off - door transitions get in-between frames again");
 }
 static void EnhancePoll(double now) {
     if (!g_enhWatch || now - g_enhT < 1000.0) return;
     g_enhT = now;
     WIN32_FILE_ATTRIBUTE_DATA fa;
     if (!GetFileAttributesExA(g_enhIni, GetFileExInfoStandard, &fa) || !CompareFileTime(&fa.ftLastWriteTime, &g_enhTime)) return;
-    int v = EnhanceRead60();
+    int wd = 0, fp = -1, v = EnhanceRead(&wd, &fp);
     if (v < 0) return;                       // not readable yet - try again next second
     g_enhTime = fa.ftLastWriteTime;
+    EnhanceSetWideDoors(wd);
+    EnhanceSetPacing(fp);
     if (v == g_enh60) return;
     g_enh60 = v;
     Log("RE:Enhance's Gameplay60FPS changed to %d in game", v);
@@ -931,17 +1007,45 @@ static DWORD WINAPI DeferredMessageThread(LPVOID text) {
 
 static int EnhanceStandDown(int re2) {
     if (!EnhanceIniPath()) return 0;
-    int fps60 = EnhanceRead60();
+    int wd = 0, fp = -1, fps60 = EnhanceRead(&wd, &fp);
     if (fps60 < 0) fps60 = 0;
     g_enh60 = fps60;
     Log("RE:Enhance detected (RE_ENHANCE.ini, Gameplay60FPS=%d)", fps60);
     if (re2) {
         // RE2: REuncap installs its hooks either way and follows the setting while the game runs (EnhancePoll).
         g_enhWatch = 1;
+        // What !REuncap-RE-Enhance.asi did before RE:Enhance loaded (see g_enhPacing).
+        char hv[64] = ""; DWORD hn = GetEnvironmentVariableA("REUNCAP_ENH_HELPER", hv, sizeof hv);
+        int hFps = 0, hPace = 0, hLate = 0;
+        if (!hn || hn >= sizeof hv) {
+            Log("!REuncap-RE-Enhance.asi not loaded - RE:Enhance's 60 FPS and BETTER FRAME PACING are not switched off automatically");
+        } else if (!strcmp(hv, "off")) {
+            Log("!REuncap-RE-Enhance.asi: off (RE2EnhanceAutoSettings=0 or Enabled=0) - RE:Enhance's settings left as they are");
+        } else {
+            sscanf_s(hv, "fps60=%d pacing=%d late=%d", &hFps, &hPace, &hLate);
+            g_enhHelper = 1;
+            Log("!REuncap-RE-Enhance.asi: Gameplay60FPS %s, FramePacing %s%s", hFps ? "switched off" : "was off",
+                hPace ? "switched off" : "was off", hLate && (hFps || hPace) ? " - but RE:Enhance had already loaded, so this applies from the next start" : "");
+        }
+        if (hLate && hFps) fps60 = g_enh60 = 1;   // RE:Enhance runs its 60 FPS this session after all
+        g_enhPacingActive = fp == 1 || (hLate && hPace);
+        EnhanceSetWideDoors(wd);
+        EnhanceSetPacing(fp);
+        if (g_enhPacingActive) Log("RE:Enhance's FramePacing (BETTER FRAME PACING) is on - on 60/120/180/240 Hz monitors it holds REuncap's frames back");
+        // One message once the game window is up: a problem first (shown even with ToggleMessage=0), else what was
+        // switched off. (It replaces the old-reuncap.ini note only for a problem.)
         if (fps60) {
             g_enabled = 0; g_enhPaused = 1;
             Log("RE:Enhance's own 60 FPS is on - REuncap starts paused (it resumes when Gameplay60FPS is switched off)");
-            if (g_toggleMsg) strcpy_s(g_startMsg, "RE:Enhance's 60 FPS is on - REuncap is paused. Switch it off in RE:Enhance's menu to use REuncap.");
+            strcpy_s(g_startMsg, hLate && hFps ? "REuncap switched off RE:Enhance's 60 FPS, but only from the next start - restart the game to use REuncap."
+                                               : "RE:Enhance's 60 FPS is on - REuncap is paused. Switch it off in RE:Enhance's menu to use REuncap.");
+        } else if (g_enhPacingActive) {
+            strcpy_s(g_startMsg, hLate && hPace ? "REuncap switched off RE:Enhance's BETTER FRAME PACING, but only from the next start - restart the game for REuncap's full frame rate."
+                                                : "RE:Enhance's BETTER FRAME PACING is on - it limits REuncap's frame rate. Switch it off in RE:Enhance's options and restart the game.");
+        } else if ((hFps || hPace) && g_toggleMsg && !g_startMsg[0]) {
+            strcpy_s(g_startMsg, hFps && hPace ? "REuncap switched off RE:Enhance's 60 FPS and BETTER FRAME PACING (they limit REuncap)."
+                                 : hFps    ? "REuncap switched off RE:Enhance's 60 FPS (REuncap replaces it)."
+                                           : "REuncap switched off RE:Enhance's BETTER FRAME PACING (it limits REuncap's frame rate).");
         }
         return 0;
     }
@@ -985,6 +1089,7 @@ static void LoadConfig(const char* dir) {
     g_fpsCap  = GetPrivateProfileIntA("REuncap", "FpsCap", -1, ini);
     g_iniFpsCap = g_fpsCap;
     g_simLoadMs = GetPrivateProfileIntA("REuncap", "SimulateLoadMs", 0, ini);
+    g_simRealMs = GetPrivateProfileIntA("REuncap", "SimulateRealMs", 0, ini);
     char buf[32];
     GetPrivateProfileStringA("REuncap", "MaxMovePerTick", "2500", buf, sizeof buf, ini); g_maxMove = (float)atof(buf);
     CheckIniVersion(ini);

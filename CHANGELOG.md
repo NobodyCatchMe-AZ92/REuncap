@@ -1,5 +1,54 @@
 # REuncap changelog
 
+## v1.4.2 (2026-11-17)
+**RE:Enhance 4.0 V393 (4.0.1)** (Resident Evil 2) - v1.4.2 is tested with this update of the Full release of
+RE:Enhance 4.0 (`RE_ENHANCE_Version.txt` says `4.0 (V393)`). Everything from v1.4.1 works unchanged with it.
+- **Fix: Resident Evil 2 with RE:Enhance's 16:9 mode stayed at about 90 fps** with a frame rate cap of 120
+  (reported by several players). In 16:9, drawing each of the game's own frames takes several times longer
+  than in 4:3, and REuncap then started that frame so early that only two in-between frames fit into each
+  game tick. It now starts it as late as it can still be finished in time, so with a cap that is a multiple
+  of 30 (60, 90, 120...) all in-between frames fit again: measured about 90 -> 110-120 fps at cap 120, with
+  much more even frame spacing. Game speed is unchanged. 4:3, Resident Evil 2 without RE:Enhance, Resident Evil
+  and Resident Evil 3 are not affected.
+- With RE:Enhance's 16:9 mode, a frame rate cap that is a multiple of 30 (60, 90 or 120) is recommended: with
+  other caps (e.g. 100 or 144) the frame rate in 16:9 can stay below the cap (about 90 at 100, 120 at 144).
+  `RE2Pacing=1` rounds your cap down to a multiple of 30.
+
+**Upgrading:** replace `scripts\reuncap.asi`. Everything else from v1.4.1 (`reuncap.ini`, `DDrawCompat.ini`,
+`!REuncap-RE-Enhance.asi`) stays as it is. Coming from v1.4 or older, see the v1.4.1 upgrade notes below.
+
+## v1.4.1 (2026-11-09)
+**RE:Enhance 4.0 V390** (Resident Evil 2) - v1.4.1 is tested with the Full release of RE:Enhance
+4.0 for Resident Evil 2 (`RE_ENHANCE_Version.txt` says `4.0 (V390)`). Compatibility with further updates of RE:Enhance 4.0 will be
+ensured as they come.
+- **Fix:** door and stair transitions in RE:Enhance's 16:9 mode flickered with stretched copies of the door
+  reaching into the side borders at frame rates above 60. V390 shows door sequences in true 16:9 itself;
+  while its 16:9 mode is on, REuncap now leaves these transitions to RE:Enhance (they play at its own 60 fps).
+  In 4:3 they keep REuncap's in-between frames. Switching 16:9 on or off in RE:Enhance's menu is followed
+  right away.
+- V390 pans its 16:9 picture smoothly at your frame rate itself, so REuncap leaves the pan alone there
+  (`RE2EnhancePanSmooth` only applies to the first pre-release). The log line about it is clearer.
+- **New: RE:Enhance's own 60 FPS and BETTER FRAME PACING are switched off automatically.** BETTER FRAME
+  PACING (new in V390, on by default) holds every frame back to its own 60 Hz rhythm on monitors running at
+  60, 120, 180 or 240 Hz, which limited REuncap to about 30-60 fps (reported on a 240 Hz monitor).
+  RE:Enhance reads both options only while the game starts, before REuncap is loaded, so the new file
+  `!REuncap-RE-Enhance.asi` (Resident Evil 2 folder, next to the game's `.exe`) runs just before RE:Enhance
+  and switches both off in `RE_ENHANCE.ini` every time the game starts. Installing REuncap for RE:Enhance no
+  longer needs any change in RE:Enhance's menu. New setting `RE2EnhanceAutoSettings` (default `1`; `0`
+  leaves RE:Enhance's settings alone).
+- REuncap shows a message at start-up while either option is on anyway (without the new file, or with
+  `RE2EnhanceAutoSettings=0`), when BETTER FRAME PACING is switched on or off in RE:Enhance's menu (it only
+  changes after a restart), and if it measures that its frames are being held back.
+- REuncap's on-screen messages have a dark outline, so they stay readable on light pictures (the start-up
+  messages appear over the white logo screen).
+- Everything else from v1.4 works unchanged with V390 (its 60 FPS toggle while playing, `DDrawCompat.ini`).
+  **Play in windowed mode** for the most stable frame rate; fullscreen is much smoother with V390 than with
+  the first pre-release.
+
+**Upgrading:** replace `scripts\reuncap.asi`, and in Resident Evil 2 also copy `!REuncap-RE-Enhance.asi` next
+to the game's `.exe`. `reuncap.ini` and `DDrawCompat.ini` from v1.4 can stay as they are (`RE2EnhanceAutoSettings`
+is only in the new `reuncap.ini`; without the line it counts as `1`).
+
 ## v1.4 (2026-10-28)
 **New**
 - **Resident Evil 2 works together with RE:Enhance 4.0.** This compatibility is based specifically on the

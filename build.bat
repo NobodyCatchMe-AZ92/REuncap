@@ -12,8 +12,11 @@ call "%VSDIR%\VC\Auxiliary\Build\vcvars32.bat" >nul
 if not exist build mkdir build
 cl /nologo /O2 /MT /W3 /LD /EHsc src\reuncap.cpp /Fobuild\ /Febuild\reuncap.asi /link /DLL user32.lib winmm.lib kernel32.lib
 set "RC=%errorlevel%"
-rem intermediate files record the local build path - keep only the .asi
-del /q build\reuncap.obj build\reuncap.exp build\reuncap.lib 2>nul
+rem !REuncap-RE-Enhance.asi: Resident Evil 2 with RE:Enhance only (see src\enhance_settings.cpp)
+if "%RC%"=="0" cl /nologo /O2 /MT /W3 /LD src\enhance_settings.cpp /Fobuild\ "/Febuild\!REuncap-RE-Enhance.asi" /link /DLL
+if "%RC%"=="0" set "RC=%errorlevel%"
+rem intermediate files record the local build path - keep only the .asi files
+del /q build\reuncap.obj build\reuncap.exp build\reuncap.lib build\enhance_settings.obj "build\!REuncap-RE-Enhance.exp" "build\!REuncap-RE-Enhance.lib" 2>nul
 exit /b %RC%
 :novs
 echo Visual Studio with the C++ tools was not found. Install "Desktop development with C++" or run from a VS developer prompt.

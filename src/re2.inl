@@ -487,7 +487,9 @@ static void R2Restore(char* marni) {
 // RE:Enhance's 16:9 mode shows a vertical window of the 4:3 picture that follows the player. Its target moves
 // once per tick, the window it shows only at 60 Hz, so above 60 fps the whole picture panned in 60 Hz steps.
 // Each of our frames gets the window at its own point in time: the per-tick target blended with the same t as
-// the models. Addresses are inside RE:Enhance's bio2hd.asi image (V336); any other build is left alone.
+// the models. Addresses are inside RE:Enhance's bio2hd.asi image (V336); any other build is left alone. Later
+// builds (V390, "WidescreenComposer") ease the shown window on every presented frame themselves, by time, so
+// they need nothing from REuncap.
 static float* g_r2PanTarget;                 // per-tick target
 static float* g_r2PanShow[2];                // the shown window (RE:Enhance keeps two copies)
 static float g_r2PanPrev, g_r2PanCur, g_r2PanVal, g_r2PanSave[2];
@@ -500,7 +502,7 @@ static void R2PanFind() {
         BYTE* b = (BYTE*)m;
         IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
         if (nt->OptionalHeader.SizeOfImage != 0x8D24000 || memcmp(b + 0x1EA503, "crop_top_millionths", 19)) {
-            Log("RE:Enhance widescreen pan: unknown bio2hd.asi build - pan not smoothed (stays at 60 Hz)"); return;
+            Log("RE:Enhance widescreen pan: not the V336 pre-release build - pan left to RE:Enhance (newer builds move it every frame themselves)"); return;
         }
         g_r2PanTarget = (float*)(b + 0x5DFE348);
         g_r2PanShow[0] = (float*)(b + 0x5DFE340);
@@ -572,6 +574,28 @@ static void R2HookPrimary(char* marni) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+// RE:Enhance's BETTER FRAME PACING (see g_enhPacing): while it runs this session, the presents of gameplay ticks
+// (in-between and real frames) are timed; averaging 6 ms or more over ~2 s (normally well under 1 ms, fullscreen
+// ~1 ms) means RE:Enhance is holding them (seen both ways at 120 Hz: in-between frames ~23 ms each, or the real
+// frame ~25 ms). Warns once per session.
+static double g_r2PacerSum, g_r2PacerT; static int g_r2PacerN;
+static void R2PacerNote(double ms) {
+    if (!g_enhPacingActive || g_enhPacingWarned) return;
+    g_r2PacerSum += ms; g_r2PacerN++;
+    double now = NowMs();
+    if (!g_r2PacerT) g_r2PacerT = now;
+    if (now - g_r2PacerT < 2000.0) return;
+    double avg = g_r2PacerN ? g_r2PacerSum / g_r2PacerN : 0;
+    DWORD fgPid = 0; HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &fgPid);
+    if (g_r2PacerN >= 20 && avg >= 6.0 && fgPid == GetCurrentProcessId()) {   // the message shows over the window in front
+        g_enhPacingWarned = 1;
+        Log("RE:Enhance's BETTER FRAME PACING holds REuncap's frames back (present avg %.1f ms over %d ticks) - asked the player to switch it off", avg, g_r2PacerN);
+        ShowMessage(g_enhPacing == 0 ? "RE:Enhance's BETTER FRAME PACING is limiting REuncap's frame rate. Restart the game to apply switching it off."
+                                     : "RE:Enhance's BETTER FRAME PACING is limiting REuncap's frame rate. Switch it off in RE:Enhance's options and restart the game.", 10000);
+    }
+    g_r2PacerSum = 0; g_r2PacerN = 0; g_r2PacerT = now;
+}
+
 static char* g_r2Marni;
 static int g_r2Force;   // debug: run extra frames outside gameplay too (to measure present behaviour)
 static double g_r2PresSum, g_r2PresMax, g_r2DrawSum; static int g_r2PresN, g_r2ExtraN;
@@ -611,6 +635,7 @@ static void R2RenderAt(float t) {
     g_r2PresentTramp(marni, 0);
     R2PanAfter();
     double t2 = NowMs();
+    R2PacerNote(t2 - t1);
     g_r2DrawSum += t1 - t0; g_r2PresSum += t2 - t1; if (t2 - t1 > g_r2PresMax) g_r2PresMax = t2 - t1; g_r2PresN++; g_r2ExtraN++; g_r2trCur.extras++;
     if (t1 - t0 > g_r2trCur.drawMax) g_r2trCur.drawMax = (float)(t1 - t0);
     if (t2 - t1 > g_r2trCur.presMax) g_r2trCur.presMax = (float)(t2 - t1);
@@ -746,7 +771,7 @@ static int __fastcall R2Clear_Hook(void* marni, void* edx) {
         if (g_debug >= 2) Log("    cut: words %04X %04X %04X", *(WORD*)R2_STAGE_ROOM, *(WORD*)(R2_STAGE_ROOM + 2), *(WORD*)(R2_STAGE_ROOM + 4));
     }
 
-    int door = g_r2DoorCur && !g_r2InGame;
+    int door = g_r2DoorCur && !g_r2InGame && !g_enhWideDoors;
     if (!g_r2InExtra && !g_r2DidFrames && g_enabled && (g_r2InGame || g_r2Force || door) && !g_r2CutHold && !R2CrTextShown() && marni == *(void**)R2_MARNI_PTR) {
         g_r2DidFrames = 1;
         g_r2Marni = (char*)marni;
@@ -774,7 +799,10 @@ static int __fastcall R2Present_Hook(void* marni, void* edx) {
     if (g_r2CuSuppress || g_r2SkipReal) { r = g_r2LastPresentRet; g_r2trCur.supp += g_r2CuSuppress; }   // catch-up: not shown
     else {
         if (g_r2DidFrames) R2PanApply(1.0f);   // the real frame: the end point of this tick's in-between frames
+        if (g_simRealMs > 0 && g_r2DidFrames) WaitUntil(NowMs() + g_simRealMs);
+        double pa = NowMs();
         r = g_r2LastPresentRet = g_r2PresentTramp(marni, edx);
+        if (g_r2DidFrames) R2PacerNote(NowMs() - pa);
         R2PanAfter();
     }
     if (g_debug >= 2 && g_r2PanTarget) { g_r2PanTickN++; if (*g_r2PanTarget != panNow) g_r2PanChgN++; }
@@ -797,9 +825,10 @@ static int __fastcall R2Present_Hook(void* marni, void* edx) {
         if (now - g_statT >= 2000.0) {
             double secs = (now - g_statT) / 1000.0;
             double mean = g_ivN ? g_ivSum / g_ivN : 0, sd = g_ivN ? sqrt(g_ivSq / g_ivN - mean * mean) : 0;
-            Log("RE2 fps %.1f  ticks/s %.2f (P %.2f ms)  cap %.0f  frame ms avg %.2f sd %.2f max %.2f  blends/tick %.1f  recs %d  ingame %d  guard %.2f",
+            Log("RE2 fps %.1f  ticks/s %.2f (P %.2f ms)  cap %.0f  frame ms avg %.2f sd %.2f max %.2f  blends/tick %.1f  recs %d  ingame %d  guard %.2f  late %d",
                 g_frames / secs, g_ticks / secs, g_tickPeriod, FrameIntervalMs() > 0 ? 1000.0 / FrameIntervalMs() : 0.0,
-                mean, sd, g_ivMax, (double)g_blended / (g_ticks ? g_ticks : 1), g_r2prevN, g_r2InGame, g_costPeak + 0.3);
+                mean, sd, g_ivMax, (double)g_blended / (g_ticks ? g_ticks : 1), g_r2prevN, g_r2InGame, g_costPeak + 0.3, g_paceLateUsed);
+            g_paceLateUsed = 0;
             if (g_debug >= 2) Log("    sprites: %d tagged/tick, %d shifts in window; pass2: %d prims", g_s1prevN, g_s1Shifted, g_p2N);
             if (g_debug >= 2) for (int i = 0; i < (int)R2_CEN_SITES; i++) if (g_r2Cen[i].n) {
                 Log("    other insert site %06X: %d inserts, %d with matrix, %d moved (in window)", kR2OtherInsertSites[i], g_r2Cen[i].n, g_r2Cen[i].mtx, g_r2Cen[i].moved);
@@ -821,8 +850,9 @@ static int __fastcall R2Present_Hook(void* marni, void* edx) {
             if (g_debug >= 2 && g_r2trN) {
                 char line[8192]; int o = 0;
                 for (int i = 0; i < g_r2trN && o < 8000; i++)
-                    o += sprintf_s(line + o, sizeof line - o, " [%s%s%s%.1f x%d t%.2f b%d s%d h%d/%d/%d/%d L%.2f%s]", g_r2tr[i].unshown ? "UNSHOWN " : "", g_r2tr[i].cut ? "CUT " : "", g_r2tr[i].supp ? "HID " : "", g_r2tr[i].dt, g_r2tr[i].extras,
-                        g_r2tr[i].extras ? g_r2tr[i].tsum / g_r2tr[i].extras : 0.f, g_r2tr[i].nb, g_r2tr[i].same, g_r2tr[i].hCut, g_r2tr[i].hPrev, g_r2tr[i].hFail, g_r2tr[i].hDup, g_r2tr[i].lag, g_r2tr[i].repl ? "R" : "");
+                    o += sprintf_s(line + o, sizeof line - o, " [%s%s%s%.1f x%d t%.2f b%d s%d h%d/%d/%d/%d L%.2f%s c%.1f r%.1f e%.1f]", g_r2tr[i].unshown ? "UNSHOWN " : "", g_r2tr[i].cut ? "CUT " : "", g_r2tr[i].supp ? "HID " : "", g_r2tr[i].dt, g_r2tr[i].extras,
+                        g_r2tr[i].extras ? g_r2tr[i].tsum / g_r2tr[i].extras : 0.f, g_r2tr[i].nb, g_r2tr[i].same, g_r2tr[i].hCut, g_r2tr[i].hPrev, g_r2tr[i].hFail, g_r2tr[i].hDup, g_r2tr[i].lag, g_r2tr[i].repl ? "R" : "",
+                        g_r2tr[i].clearAt, g_r2tr[i].realClear, g_r2tr[i].presentEnd);   // Clear / real frame start / its present end, ms after the tick start
                 Log("    trace:%s", line);
                 g_r2trN = 0;
             }
@@ -883,5 +913,7 @@ static void Re2InitInterp() {
         g_r2TickTramp != 0, g_r2SubmitTramp != 0, g_r2ClearTramp != 0, g_r2PresentTramp != 0, i1, i2);
     if (g_chainedHooks) Log("RE2: %d hooks chained onto another mod's hooks (RE:Enhance)", g_chainedHooks);
     if (g_chainedHooks) { g_robustPeaks = 1; Log("RE2: present-stall tolerant frame budget (RE:Enhance)"); }
+    // expensive real frames (RE:Enhance 16:9) keep all in-between frames - see PaceExtraFrames (hidden A/B switch)
+    g_paceLateAnchor = GetPrivateProfileIntA("REuncap", "RE2LateAnchor", 1, g_iniPath);
     if (g_chainedHooks && GetPrivateProfileIntA("REuncap", "RE2EnhancePanSmooth", 1, g_iniPath)) R2PanFind();
 }
