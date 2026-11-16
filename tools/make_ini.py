@@ -63,12 +63,23 @@ ENTRIES = [
         "  0 = the new angle's first image is shown twice (one short 30 fps step), which is the vanilla",
         "      game's behaviour but doesn't feel as natural as REuncap's CutCatchUp solution",
     ]),
+    ("RE2EnhanceAutoSettings", "1", [
+        "Resident Evil 2 with RE:Enhance 4.0 only. Two RE:Enhance options stop REuncap from working:",
+        "its own 60 FPS (REuncap pauses while it is on) and BETTER FRAME PACING (on 60/120/180/240 Hz",
+        "monitors it limits REuncap to about 30-60 fps).",
+        "  1 = REuncap switches both off in RE_ENHANCE.ini whenever the game starts (default). This is",
+        "      done by !REuncap-RE-Enhance.asi next to the game's .exe, which runs before RE:Enhance.",
+        "  0 = leave RE:Enhance's settings alone (REuncap then tells you when one of them is on)",
+        "If you uninstall REuncap, you can switch them back on in RE:Enhance's menu.",
+        "Without RE:Enhance this setting does nothing.",
+    ]),
     ("RE2EnhancePanSmooth", "1", [
-        "Resident Evil 2 with RE:Enhance 4.0 only (the current pre-release build). RE:Enhance's 16:9 mode",
-        "pans the picture up and down to follow the player.",
+        "Resident Evil 2 with the first pre-release of RE:Enhance 4.0 only. RE:Enhance's 16:9 mode pans the",
+        "picture up and down to follow the player.",
         "  1 = the pan moves smoothly at your frame rate, like everything else (default)",
         "  0 = RE:Enhance's own pan (it moves at 60 Hz, which looks less smooth at higher frame rates)",
-        "Without RE:Enhance this setting does nothing.",
+        "RE:Enhance V390 and later pan smoothly themselves; there, and without RE:Enhance, this setting",
+        "does nothing.",
     ]),
 ]
 

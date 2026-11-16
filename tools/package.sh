@@ -23,9 +23,11 @@
 #   scripts/UltimateASILoader-LICENSE.txt
 #   DDrawCompat.ini                          (Resident Evil 2 only) PresentDelay = off for DDrawCompat, which
 #                                            RE:Enhance uses (its default delay let only ~60 frames/s through)
+#   !REuncap-RE-Enhance.asi                  (Resident Evil 2 only) switches RE:Enhance's own 60 FPS and BETTER
+#                                            FRAME PACING off before RE:Enhance loads (see src/enhance_settings.cpp)
 set -e
 cd "$(dirname "$0")/.."
-VER="${1:-1.4}"
+VER="${1:-1.4.2}"
 RN=release/REuncap-NONSTEAM
 RS=release/REuncap-STEAM
 rm -rf release/REuncap "$RN" "$RS"
@@ -60,7 +62,8 @@ EOF
 ; Settings for Ultimate ASI Loader (dsound.dll), which loads REuncap from the "scripts" folder.
 ;
 ; LoadFromScriptsOnly=0 lets the loader also load .asi files next to the game's .exe. Resident Evil 2
-; needs that: Seamless HD Project's bio2hd.asi lives there and is still in use. Keep this at 0.
+; needs that: Seamless HD Project's bio2hd.asi (or RE:Enhance's) lives there and is still in use, and
+; so does REuncap's !REuncap-RE-Enhance.asi. Keep this at 0.
 [GlobalSets]
 LoadFromScriptsOnly=0
 EOF
@@ -115,6 +118,7 @@ NOTE113="(Classic REbirth 1.1.3: scripts\\bio1hd.asi is Seamless HD Project's HD
 # Resident Evil 2: DDrawCompat (used by RE:Enhance) holds a frame back until the game has not drawn for 10 ms
 # (PresentDelay = on(10)); with in-between frames every few ms that let only an uneven ~60 frames/s reach the
 # screen. RE:Enhance rewrites DDrawCompat's process ini files at every start, but not this directory one.
+# Also copies !REuncap-RE-Enhance.asi there (it has to sit next to RE:Enhance's bio2hd.asi).
 ddrawcompat_ini() {   # $1 = game folder (next to the game's .exe)
     crlf > "$1/DDrawCompat.ini" <<'EOF'
 # Added by REuncap for Resident Evil 2 with RE:Enhance (or any other setup that uses DDrawCompat).
@@ -123,12 +127,16 @@ ddrawcompat_ini() {   # $1 = game folder (next to the game's .exe)
 # "off" shows every frame right away. Without DDrawCompat this file is simply not used.
 PresentDelay = off
 EOF
+    cp "build/!REuncap-RE-Enhance.asi" "$1/"
 }
-ENHNOTE="RE:Enhance 4.0 users (pre-release RE2 build): PLAY IN WINDOWED MODE for the most stable frame rate,
-and switch RE:Enhance's own 60 FPS off (REuncap pauses while it is on). DDrawCompat.ini next to this file
-is for RE:Enhance - keep it there. Details: \"RE:Enhance 4.0\" in README.md.
+ENHNOTE="RE:Enhance 4.0 users: PLAY IN WINDOWED MODE for the most stable frame rate.
+!REuncap-RE-Enhance.asi and DDrawCompat.ini next to this file are for RE:Enhance - keep them there: the .asi
+switches RE:Enhance's own 60 FPS and its BETTER FRAME PACING off whenever the game starts (both stop REuncap
+from working; RE2EnhanceAutoSettings in reuncap.ini). Details: \"RE:Enhance 4.0\" in README.md.
 "
-DDC="DDrawCompat.ini can be deleted too (it is only used by DDrawCompat, e.g. with RE:Enhance)."
+DDC="Also delete !REuncap-RE-Enhance.asi. DDrawCompat.ini can be deleted too (it is only used by DDrawCompat,
+e.g. with RE:Enhance). RE:Enhance users: switch RE:Enhance's 60 FPS / BETTER FRAME PACING back on in its menu
+if you want them."
 
 # Mulderload layout, RE1/RE2: only the scripts folder (the pack's own ASI loader loads it) + a reminder
 ml_scripts() {   # $1 = rebirth folder, $2 = game name, $3 = extra uninstall note, $4 = extra where-note
